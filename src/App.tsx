@@ -2859,7 +2859,7 @@ export default function App() {
       <div className="min-h-screen bg-[#fafaf9] flex flex-col items-center justify-center p-4">
         <div className="flex flex-col items-center space-y-4">
           <img 
-            src="/src/assets/images/book_app_logo_1784636080505.jpg" 
+            src="/src/assets/images/booking_setter_logo_1784639936453.jpg" 
             alt="Book App Logo" 
             className="h-20 w-20 rounded-3xl object-cover shadow-xl shadow-indigo-150/10 border border-slate-200/40 animate-pulse"
             referrerPolicy="no-referrer"
@@ -2897,7 +2897,7 @@ export default function App() {
           {/* Main App Logo Header */}
           <div className="flex items-center gap-3 px-1.5 py-1">
             <img 
-              src="/src/assets/images/book_app_logo_1784636080505.jpg" 
+              src="/src/assets/images/booking_setter_logo_1784639936453.jpg" 
               alt="Book App Logo" 
               className="h-10 w-10 rounded-xl object-cover shadow-sm border border-slate-200/40"
               referrerPolicy="no-referrer"
@@ -2917,9 +2917,6 @@ export default function App() {
               id="sidebar-business-selector-btn"
             >
               <div className="flex items-center gap-2.5 min-w-0">
-                <div className="p-2 bg-gradient-to-tr from-indigo-600 to-violet-600 rounded-xl text-white shadow-md shadow-indigo-100/40 shrink-0">
-                  <Sparkles className="h-4 w-4" />
-                </div>
                 <div className="min-w-0">
                   <h1 className="text-xs font-black text-slate-900 tracking-tight truncate max-w-[110px] font-display">
                     {business.name}

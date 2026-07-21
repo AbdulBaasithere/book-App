@@ -108,86 +108,162 @@ async function startServer() {
       return res.status(400).json({ error: "Supabase credentials are not configured in environment variables." });
     }
 
-    try {
-      const authHeader = req.headers.authorization;
-      const token = authHeader?.startsWith("Bearer ") ? authHeader.substring(7) : undefined;
-      const supabase = createClient(url, key, {
-        global: {
-          headers: token ? { Authorization: `Bearer ${token}` } : undefined
+    let attempts = 0;
+    const maxAttempts = 5;
+
+    while (attempts < maxAttempts) {
+      try {
+        const authHeader = req.headers.authorization;
+        const token = authHeader?.startsWith("Bearer ") ? authHeader.substring(7) : undefined;
+
+        // Proactive sleep if token iat is in the future relative to our server clock (clock skew mitigation)
+        if (token && attempts === 0) {
+          const parts = token.split('.');
+          if (parts.length === 3) {
+            try {
+              const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
+              if (payload && typeof payload.iat === 'number') {
+                const nowSecs = Math.floor(Date.now() / 1000);
+                const skewSecs = payload.iat - nowSecs;
+                if (skewSecs > 0) {
+                  console.warn(`[Proactive Clock Skew Mitigation] JWT iat is ${skewSecs}s in the future. Sleeping for ${skewSecs + 1}s...`);
+                  await new Promise(resolve => setTimeout(resolve, (skewSecs + 1) * 1000));
+                }
+              }
+            } catch (e) {
+              console.error("Failed to parse JWT payload for clock skew check:", e);
+            }
+          }
         }
-      });
-      const {
-        userId,
-        activeBusinessId,
-        fetchOnly = false,
-        businesses = [],
-        staff = [],
-        clients = [],
-        packages = [],
-        bookings = [],
-        payments = [],
-        services = []
-      } = req.body;
 
-      if (!userId) {
-        return res.status(400).json({ error: "Authentication is required. User ID must be provided to synchronize." });
-      }
+        const supabase = createClient(url, key, {
+          global: {
+            headers: token ? { Authorization: `Bearer ${token}` } : undefined
+          }
+        });
 
-      // Compute a secure, mapped fallback business ID
-      let rawFallbackId = activeBusinessId || (businesses[0]?.id) || 'biz-1';
-      const fallbackBizId = rawFallbackId === 'biz-1' ? `biz-1-${userId}` : rawFallbackId;
+        const {
+          userId,
+          activeBusinessId,
+          fetchOnly = false,
+          businesses = [],
+          staff = [],
+          clients = [],
+          packages = [],
+          bookings = [],
+          payments = [],
+          services = []
+        } = req.body;
 
-      if (!fetchOnly) {
-        // 1. Upsert Businesses
-        if (businesses.length > 0) {
-          const dbBusinesses = toSnakeCase(businesses).map((b: any) => {
-            const mappedId = b.id === 'biz-1' ? `biz-1-${userId}` : b.id;
+        if (!userId) {
+          return res.status(400).json({ error: "Authentication is required. User ID must be provided to synchronize." });
+        }
+
+        // Compute a secure, mapped fallback business ID
+        let rawFallbackId = activeBusinessId || (businesses[0]?.id) || 'biz-1';
+        const fallbackBizId = rawFallbackId === 'biz-1' ? `biz-1-${userId}` : rawFallbackId;
+
+        if (!fetchOnly) {
+          // 1. Upsert Businesses
+          if (businesses.length > 0) {
+            const dbBusinesses = toSnakeCase(businesses).map((b: any) => {
+              const mappedId = b.id === 'biz-1' ? `biz-1-${userId}` : b.id;
+              return { 
+                ...b, 
+                id: mappedId, 
+                user_id: userId,
+                created_at: b.created_at || new Date().toISOString()
+              };
+            });
+            const { error: bizErr } = await supabase.from('businesses').upsert(dbBusinesses);
+            if (bizErr) throw new Error(`Businesses upsert error: ${bizErr.message}`);
+          }
+
+          // 2. Upsert Staff
+          if (staff.length > 0) {
+            const dbStaff = toSnakeCase(staff).map((s: any) => {
+              const rawBizId = s.business_id || fallbackBizId;
+              const mappedBizId = (rawBizId === 'biz-1' || !rawBizId) ? `biz-1-${userId}` : rawBizId;
+              return { 
+                ...s, 
+                business_id: mappedBizId, 
+                user_id: userId,
+                created_at: s.created_at || new Date().toISOString()
+              };
+            });
+            const { error: staffErr } = await supabase.from('staff').upsert(dbStaff);
+            if (staffErr) throw new Error(`Staff upsert error: ${staffErr.message}`);
+          }
+
+          // 3. Upsert Clients
+          if (clients.length > 0) {
+            const dbClients = toSnakeCase(clients).map((c: any) => {
+              const rawBizId = c.business_id || fallbackBizId;
+              const mappedBizId = (rawBizId === 'biz-1' || !rawBizId) ? `biz-1-${userId}` : rawBizId;
+              return { 
+                ...c, 
+                business_id: mappedBizId, 
+                user_id: userId,
+                created_at: c.created_at || new Date().toISOString()
+              };
+            });
+            const { error: clientErr } = await supabase.from('clients').upsert(dbClients);
+            if (clientErr) throw new Error(`Clients upsert error: ${clientErr.message}`);
+          }
+
+          // 4. Upsert Packages
+          if (packages.length > 0) {
+            const dbPackages = toSnakeCase(packages).map((p: any) => {
+              const rawBizId = p.business_id || fallbackBizId;
+              const mappedBizId = (rawBizId === 'biz-1' || !rawBizId) ? `biz-1-${userId}` : rawBizId;
+              return { 
+                ...p, 
+                business_id: mappedBizId, 
+                user_id: userId,
+                created_at: p.created_at || new Date().toISOString()
+              };
+            });
+            const { error: pkgErr } = await supabase.from('packages').upsert(dbPackages);
+            if (pkgErr) throw new Error(`Packages upsert error: ${pkgErr.message}`);
+          }
+
+          // 5. Upsert and Delete Bookings
+          const dbBookings = toSnakeCase(bookings).map((b: any) => {
+            const rawBizId = b.business_id || fallbackBizId;
+            const mappedBizId = (rawBizId === 'biz-1' || !rawBizId) ? `biz-1-${userId}` : rawBizId;
             return { 
               ...b, 
-              id: mappedId, 
+              business_id: mappedBizId, 
               user_id: userId,
               created_at: b.created_at || new Date().toISOString()
             };
           });
-          const { error: bizErr } = await supabase.from('businesses').upsert(dbBusinesses);
-          if (bizErr) throw new Error(`Businesses upsert error: ${bizErr.message}`);
-        }
 
-        // 2. Upsert Staff
-        if (staff.length > 0) {
-          const dbStaff = toSnakeCase(staff).map((s: any) => {
-            const rawBizId = s.business_id || fallbackBizId;
-            const mappedBizId = (rawBizId === 'biz-1' || !rawBizId) ? `biz-1-${userId}` : rawBizId;
-            return { 
-              ...s, 
-              business_id: mappedBizId, 
-              user_id: userId,
-              created_at: s.created_at || new Date().toISOString()
-            };
-          });
-          const { error: staffErr } = await supabase.from('staff').upsert(dbStaff);
-          if (staffErr) throw new Error(`Staff upsert error: ${staffErr.message}`);
-        }
+          const bookingIds = dbBookings.map((b: any) => b.id);
+          if (bookingIds.length > 0) {
+            const { error: delErr } = await supabase
+              .from('bookings')
+              .delete()
+              .eq('user_id', userId)
+              .eq('business_id', fallbackBizId)
+              .not('id', 'in', `(${bookingIds.join(',')})`);
+            if (delErr) throw new Error(`Bookings delete obsolete error: ${delErr.message}`);
+          } else {
+            const { error: delErr } = await supabase
+              .from('bookings')
+              .delete()
+              .eq('user_id', userId)
+              .eq('business_id', fallbackBizId);
+            if (delErr) throw new Error(`Bookings delete all error: ${delErr.message}`);
+          }
 
-        // 3. Upsert Clients
-        if (clients.length > 0) {
-          const dbClients = toSnakeCase(clients).map((c: any) => {
-            const rawBizId = c.business_id || fallbackBizId;
-            const mappedBizId = (rawBizId === 'biz-1' || !rawBizId) ? `biz-1-${userId}` : rawBizId;
-            return { 
-              ...c, 
-              business_id: mappedBizId, 
-              user_id: userId,
-              created_at: c.created_at || new Date().toISOString()
-            };
-          });
-          const { error: clientErr } = await supabase.from('clients').upsert(dbClients);
-          if (clientErr) throw new Error(`Clients upsert error: ${clientErr.message}`);
-        }
+          if (dbBookings.length > 0) {
+            const { error: bookingErr } = await supabase.from('bookings').upsert(dbBookings);
+            if (bookingErr) throw new Error(`Bookings upsert error: ${bookingErr.message}`);
+          }
 
-        // 4. Upsert Packages
-        if (packages.length > 0) {
-          const dbPackages = toSnakeCase(packages).map((p: any) => {
+          // 6. Upsert and Delete Payments
+          const dbPayments = toSnakeCase(payments).map((p: any) => {
             const rawBizId = p.business_id || fallbackBizId;
             const mappedBizId = (rawBizId === 'biz-1' || !rawBizId) ? `biz-1-${userId}` : rawBizId;
             return { 
@@ -197,170 +273,129 @@ async function startServer() {
               created_at: p.created_at || new Date().toISOString()
             };
           });
-          const { error: pkgErr } = await supabase.from('packages').upsert(dbPackages);
-          if (pkgErr) throw new Error(`Packages upsert error: ${pkgErr.message}`);
-        }
 
-        // 5. Upsert and Delete Bookings
-        const dbBookings = toSnakeCase(bookings).map((b: any) => {
-          const rawBizId = b.business_id || fallbackBizId;
-          const mappedBizId = (rawBizId === 'biz-1' || !rawBizId) ? `biz-1-${userId}` : rawBizId;
-          return { 
-            ...b, 
-            business_id: mappedBizId, 
-            user_id: userId,
-            created_at: b.created_at || new Date().toISOString()
-          };
-        });
+          const paymentIds = dbPayments.map((p: any) => p.id);
+          if (paymentIds.length > 0) {
+            const { error: delErr } = await supabase
+              .from('payments')
+              .delete()
+              .eq('user_id', userId)
+              .eq('business_id', fallbackBizId)
+              .not('id', 'in', `(${paymentIds.join(',')})`);
+            if (delErr) throw new Error(`Payments delete obsolete error: ${delErr.message}`);
+          } else {
+            const { error: delErr } = await supabase
+              .from('payments')
+              .delete()
+              .eq('user_id', userId)
+              .eq('business_id', fallbackBizId);
+            if (delErr) throw new Error(`Payments delete all error: ${delErr.message}`);
+          }
 
-        const bookingIds = dbBookings.map((b: any) => b.id);
-        if (bookingIds.length > 0) {
-          const { error: delErr } = await supabase
-            .from('bookings')
-            .delete()
-            .eq('user_id', userId)
-            .eq('business_id', fallbackBizId)
-            .not('id', 'in', `(${bookingIds.join(',')})`);
-          if (delErr) throw new Error(`Bookings delete obsolete error: ${delErr.message}`);
-        } else {
-          const { error: delErr } = await supabase
-            .from('bookings')
-            .delete()
-            .eq('user_id', userId)
-            .eq('business_id', fallbackBizId);
-          if (delErr) throw new Error(`Bookings delete all error: ${delErr.message}`);
-        }
+          if (dbPayments.length > 0) {
+            const { error: paymentErr } = await supabase.from('payments').upsert(dbPayments);
+            if (paymentErr) throw new Error(`Payments upsert error: ${paymentErr.message}`);
+          }
 
-        if (dbBookings.length > 0) {
-          const { error: bookingErr } = await supabase.from('bookings').upsert(dbBookings);
-          if (bookingErr) throw new Error(`Bookings upsert error: ${bookingErr.message}`);
-        }
+          // 7. Upsert and Delete Services
+          try {
+            const dbServices = toSnakeCase(services).map((s: any) => {
+              const rawBizId = s.business_id || fallbackBizId;
+              const mappedBizId = (rawBizId === 'biz-1' || !rawBizId) ? `biz-1-${userId}` : rawBizId;
+              return {
+                ...s,
+                business_id: mappedBizId,
+                user_id: userId,
+                created_at: s.created_at || new Date().toISOString()
+              };
+            });
 
-        // 6. Upsert and Delete Payments
-        const dbPayments = toSnakeCase(payments).map((p: any) => {
-          const rawBizId = p.business_id || fallbackBizId;
-          const mappedBizId = (rawBizId === 'biz-1' || !rawBizId) ? `biz-1-${userId}` : rawBizId;
-          return { 
-            ...p, 
-            business_id: mappedBizId, 
-            user_id: userId,
-            created_at: p.created_at || new Date().toISOString()
-          };
-        });
-
-        const paymentIds = dbPayments.map((p: any) => p.id);
-        if (paymentIds.length > 0) {
-          const { error: delErr } = await supabase
-            .from('payments')
-            .delete()
-            .eq('user_id', userId)
-            .eq('business_id', fallbackBizId)
-            .not('id', 'in', `(${paymentIds.join(',')})`);
-          if (delErr) throw new Error(`Payments delete obsolete error: ${delErr.message}`);
-        } else {
-          const { error: delErr } = await supabase
-            .from('payments')
-            .delete()
-            .eq('user_id', userId)
-            .eq('business_id', fallbackBizId);
-          if (delErr) throw new Error(`Payments delete all error: ${delErr.message}`);
-        }
-
-        if (dbPayments.length > 0) {
-          const { error: paymentErr } = await supabase.from('payments').upsert(dbPayments);
-          if (paymentErr) throw new Error(`Payments upsert error: ${paymentErr.message}`);
-        }
-
-        // 7. Upsert and Delete Services
-        try {
-          const dbServices = toSnakeCase(services).map((s: any) => {
-            const rawBizId = s.business_id || fallbackBizId;
-            const mappedBizId = (rawBizId === 'biz-1' || !rawBizId) ? `biz-1-${userId}` : rawBizId;
-            return {
-              ...s,
-              business_id: mappedBizId,
-              user_id: userId,
-              created_at: s.created_at || new Date().toISOString()
-            };
-          });
-
-          const { error: serviceDelErr } = await supabase
-            .from('services')
-            .delete()
-            .eq('user_id', userId)
-            .eq('business_id', fallbackBizId);
-          if (serviceDelErr) {
-            if (isMissingTableError(serviceDelErr)) {
-              // Ignore missing table error
-            } else {
-              throw new Error(`Services clear for business error: ${serviceDelErr.message}`);
-            }
-          } else if (dbServices.length > 0) {
-            const { error: serviceErr } = await supabase.from('services').upsert(dbServices);
-            if (serviceErr) {
-              if (isMissingTableError(serviceErr)) {
+            const { error: serviceDelErr } = await supabase
+              .from('services')
+              .delete()
+              .eq('user_id', userId)
+              .eq('business_id', fallbackBizId);
+            if (serviceDelErr) {
+              if (isMissingTableError(serviceDelErr)) {
                 // Ignore missing table error
               } else {
-                throw new Error(`Services upsert error: ${serviceErr.message}`);
+                throw new Error(`Services clear for business error: ${serviceDelErr.message}`);
+              }
+            } else if (dbServices.length > 0) {
+              const { error: serviceErr } = await supabase.from('services').upsert(dbServices);
+              if (serviceErr) {
+                if (isMissingTableError(serviceErr)) {
+                  // Ignore missing table error
+                } else {
+                  throw new Error(`Services upsert error: ${serviceErr.message}`);
+                }
               }
             }
-          }
-        } catch (servicesErr: any) {
-          if (isMissingTableError(servicesErr)) {
-            console.warn("Skipping services sync (table might not exist in Supabase yet):", servicesErr.message);
-          } else {
-            throw servicesErr; // Rethrow real database errors!
+          } catch (servicesErr: any) {
+            if (isMissingTableError(servicesErr)) {
+              console.warn("Skipping services sync (table might not exist in Supabase yet):", servicesErr.message);
+            } else {
+              throw servicesErr; // Rethrow real database errors!
+            }
           }
         }
-      }
 
-      // Now fetch latest updated state from database scoped entirely to the current user
-      const [
-        { data: resBizs, error: f1 },
-        { data: resStaff, error: f2 },
-        { data: resClients, error: f3 },
-        { data: resPkgs, error: f4 },
-        { data: resBookings, error: f5 },
-        { data: resPayments, error: f6 },
-        { data: resServices, error: f7 }
-      ] = await Promise.all([
-        supabase.from('businesses').select('*').eq('user_id', userId),
-        supabase.from('staff').select('*').eq('user_id', userId),
-        supabase.from('clients').select('*').eq('user_id', userId),
-        supabase.from('packages').select('*').eq('user_id', userId),
-        supabase.from('bookings').select('*').eq('user_id', userId),
-        supabase.from('payments').select('*').eq('user_id', userId),
-        supabase.from('services').select('*').eq('user_id', userId)
-      ]);
+        // Now fetch latest updated state from database scoped entirely to the current user
+        const [
+          { data: resBizs, error: f1 },
+          { data: resStaff, error: f2 },
+          { data: resClients, error: f3 },
+          { data: resPkgs, error: f4 },
+          { data: resBookings, error: f5 },
+          { data: resPayments, error: f6 },
+          { data: resServices, error: f7 }
+        ] = await Promise.all([
+          supabase.from('businesses').select('*').eq('user_id', userId),
+          supabase.from('staff').select('*').eq('user_id', userId),
+          supabase.from('clients').select('*').eq('user_id', userId),
+          supabase.from('packages').select('*').eq('user_id', userId),
+          supabase.from('bookings').select('*').eq('user_id', userId),
+          supabase.from('payments').select('*').eq('user_id', userId),
+          supabase.from('services').select('*').eq('user_id', userId)
+        ]);
 
-      const isServicesMissing = isMissingTableError(f7);
-      const activeF7 = isServicesMissing ? null : f7;
+        const isServicesMissing = isMissingTableError(f7);
+        const activeF7 = isServicesMissing ? null : f7;
 
-      if (f1 || f2 || f3 || f4 || f5 || f6 || activeF7) {
-        const errs = [f1, f2, f3, f4, f5, f6, activeF7].filter(Boolean).map(e => e?.message).join(', ');
-        throw new Error(`Failed to retrieve updated database state: ${errs}`);
-      }
-
-      res.json({
-        success: true,
-        servicesTableMissing: isServicesMissing,
-        data: {
-          businesses: toCamelCase(resBizs || []),
-          staff: toCamelCase(resStaff || []),
-          clients: toCamelCase(resClients || []),
-          packages: toCamelCase(resPkgs || []),
-          bookings: toCamelCase(resBookings || []),
-          payments: toCamelCase(resPayments || []),
-          services: isServicesMissing ? [] : toCamelCase(resServices || [])
+        if (f1 || f2 || f3 || f4 || f5 || f6 || activeF7) {
+          const errs = [f1, f2, f3, f4, f5, f6, activeF7].filter(Boolean).map(e => e?.message).join(', ');
+          throw new Error(`Failed to retrieve updated database state: ${errs}`);
         }
-      });
 
-    } catch (error: any) {
-      console.error("Supabase Sync Error:", error);
-      res.status(500).json({
-        error: error.message || "Unknown database synchronization error.",
-        hint: "Please ensure that you have run the schema in your Supabase SQL Editor and that RLS policies are configured correctly."
-      });
+        res.json({
+          success: true,
+          servicesTableMissing: isServicesMissing,
+          data: {
+            businesses: toCamelCase(resBizs || []),
+            staff: toCamelCase(resStaff || []),
+            clients: toCamelCase(resClients || []),
+            packages: toCamelCase(resPkgs || []),
+            bookings: toCamelCase(resBookings || []),
+            payments: toCamelCase(resPayments || []),
+            services: isServicesMissing ? [] : toCamelCase(resServices || [])
+          }
+        });
+        return; // Successfully completed, return from request
+
+      } catch (error: any) {
+        attempts++;
+        const errMsg = error.message || '';
+        if (errMsg.includes('JWT issued at future') && attempts < maxAttempts) {
+          console.warn(`[Reactive Clock Skew Mitigation] JWT issued at future detected. Retrying sync attempt ${attempts}/${maxAttempts} in 1200ms...`);
+          await new Promise(resolve => setTimeout(resolve, 1200));
+        } else {
+          console.error("Supabase Sync Error:", error);
+          return res.status(500).json({
+            error: error.message || "Unknown database synchronization error.",
+            hint: "Please ensure that you have run the schema in your Supabase SQL Editor and that RLS policies are configured correctly."
+          });
+        }
+      }
     }
   });
 
