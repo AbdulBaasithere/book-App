@@ -356,6 +356,99 @@ export default function Login({ onLoginSuccess, onBypass }: LoginProps) {
             <ShieldCheck className="h-4.5 w-4.5" />
             <span>Launch Offline Local Demo Mode</span>
           </button>
+
+          {/* Collapsible Database Connection Settings */}
+          <div className="pt-4 border-t border-slate-100">
+            <button
+              type="button"
+              onClick={() => setIsConfigOpen(!isConfigOpen)}
+              className="w-full flex items-center justify-between text-slate-400 hover:text-slate-600 transition-colors py-1 px-1"
+            >
+              <div className="flex items-center gap-2">
+                <Database className="h-3.5 w-3.5" />
+                <span className="text-[10px] font-extrabold uppercase tracking-widest">
+                  Database Settings {config.configured ? '• Connected' : '• Action Required'}
+                </span>
+                {config.configured ? (
+                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                ) : (
+                  <span className="h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse" />
+                )}
+              </div>
+              {isConfigOpen ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+            </button>
+
+            {isConfigOpen && (
+              <div className="mt-3 p-4 bg-slate-50 rounded-2xl border border-slate-100 space-y-3 text-left animate-fade-in">
+                <div>
+                  <h3 className="text-[10px] font-black text-slate-700 uppercase tracking-wider">
+                    Connection Status
+                  </h3>
+                  <p className="text-[10px] text-slate-500 mt-1 leading-relaxed">
+                    {config.configured ? (
+                      <span>
+                        Connected via <span className="font-extrabold text-indigo-600">{config.source === 'env' ? 'Environment Variables' : 'Local Custom Settings'}</span>.
+                      </span>
+                    ) : (
+                      <span className="text-amber-600 font-bold">
+                        Supabase database connection is not configured.
+                      </span>
+                    )}
+                  </p>
+                </div>
+
+                {!config.configured && (
+                  <div className="p-2.5 bg-amber-50 border border-amber-100 rounded-xl text-[10px] text-amber-800 leading-relaxed font-medium">
+                    To enable multi-device synchronization and real-time features, configure your own Supabase project below or set <code className="bg-amber-100/60 px-1 rounded font-mono text-[9px]">SUPABASE_URL</code> and <code className="bg-amber-100/60 px-1 rounded font-mono text-[9px]">SUPABASE_KEY</code> on your host.
+                  </div>
+                )}
+
+                <form onSubmit={handleApplyCustomConfig} className="space-y-3">
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-black text-slate-500 uppercase tracking-wider block">Supabase URL</label>
+                    <input
+                      type="url"
+                      value={customUrl}
+                      onChange={(e) => setCustomUrl(e.target.value)}
+                      placeholder="https://your-project.supabase.co"
+                      className="w-full bg-white border border-slate-200 hover:border-slate-300 focus:outline-indigo-500 px-3 py-1.5 rounded-xl text-[10px] font-semibold text-slate-800 transition-all"
+                      required
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-black text-slate-500 uppercase tracking-wider block">Anon API Key</label>
+                    <input
+                      type="password"
+                      value={customKey}
+                      onChange={(e) => setCustomKey(e.target.value)}
+                      placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                      className="w-full bg-white border border-slate-200 hover:border-slate-300 focus:outline-indigo-500 px-3 py-1.5 rounded-xl text-[10px] font-semibold text-slate-800 transition-all"
+                      required
+                    />
+                  </div>
+
+                  <div className="flex gap-2 pt-1">
+                    <button
+                      type="submit"
+                      className="flex-grow bg-indigo-600 hover:bg-indigo-700 text-white text-[10px] font-black py-2 rounded-lg cursor-pointer transition-all text-center"
+                    >
+                      Save Configuration
+                    </button>
+                    {config.source === 'local' && (
+                      <button
+                        type="button"
+                        onClick={handleClearCustomConfig}
+                        className="bg-slate-200 hover:bg-slate-300 text-slate-700 text-[10px] font-black px-3 py-2 rounded-lg cursor-pointer transition-all"
+                      >
+                        Reset to Env
+                      </button>
+                    )}
+                  </div>
+                </form>
+              </div>
+            )}
+          </div>
         </div>
 
       </div>
