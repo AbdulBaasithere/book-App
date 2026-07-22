@@ -362,6 +362,86 @@ export default function Login({ onLoginSuccess, onBypass }: LoginProps) {
             <span>Launch Offline Local Demo Mode</span>
           </button>
 
+          {/* Supabase Connection Configuration Accordion */}
+          <div className="pt-2 border-t border-slate-100">
+            <button
+              type="button"
+              onClick={() => setIsConfigOpen(!isConfigOpen)}
+              className="w-full flex items-center justify-between text-left p-2.5 bg-slate-50 hover:bg-slate-100/80 rounded-xl transition-colors cursor-pointer group"
+            >
+              <div className="flex items-center gap-2">
+                <Database className={`h-4 w-4 ${config.configured ? 'text-emerald-600' : 'text-amber-500'}`} />
+                <div>
+                  <span className="text-xs font-extrabold text-slate-800 block">Supabase Cloud Connection</span>
+                  <span className="text-[10px] text-slate-500 font-medium block">
+                    {config.configured 
+                      ? `Connected (${config.source === 'env' ? 'Vite Env' : 'Custom Local'})` 
+                      : 'Not Configured — Click to enter URL & Key'}
+                  </span>
+                </div>
+              </div>
+              <div className="flex items-center gap-1">
+                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${
+                  config.configured ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                }`}>
+                  {config.configured ? 'Ready' : 'Setup Required'}
+                </span>
+                {isConfigOpen ? <ChevronUp className="h-4 w-4 text-slate-400" /> : <ChevronDown className="h-4 w-4 text-slate-400" />}
+              </div>
+            </button>
+
+            {isConfigOpen && (
+              <form onSubmit={handleApplyCustomConfig} className="mt-3 p-4 bg-slate-50 border border-slate-200/80 rounded-2xl space-y-3.5 animate-fade-in text-xs">
+                <div className="p-2.5 bg-indigo-50/60 border border-indigo-100 rounded-xl text-[11px] text-indigo-900 leading-relaxed font-medium">
+                  <strong>Vercel / Production Deployment Note:</strong><br />
+                  Paste your Supabase credentials below to connect immediately in your browser, or configure <code className="bg-white/80 px-1 py-0.5 rounded font-mono text-indigo-700">VITE_SUPABASE_URL</code> & <code className="bg-white/80 px-1 py-0.5 rounded font-mono text-indigo-700">VITE_SUPABASE_ANON_KEY</code> in your Vercel Project Settings.
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[10px] font-black text-slate-600 uppercase tracking-wider block">Supabase Project URL</label>
+                  <input
+                    type="url"
+                    value={customUrl}
+                    onChange={(e) => setCustomUrl(e.target.value)}
+                    placeholder="https://your-project.supabase.co"
+                    className="w-full bg-white border border-slate-200 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 px-3 py-2 rounded-lg font-mono text-[11px] text-slate-800"
+                    required
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[10px] font-black text-slate-600 uppercase tracking-wider block">Supabase Anon Key</label>
+                  <input
+                    type="password"
+                    value={customKey}
+                    onChange={(e) => setCustomKey(e.target.value)}
+                    placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6..."
+                    className="w-full bg-white border border-slate-200 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 px-3 py-2 rounded-lg font-mono text-[11px] text-slate-800"
+                    required
+                  />
+                </div>
+
+                <div className="flex gap-2 pt-1">
+                  <button
+                    type="submit"
+                    className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold text-[11px] py-2 rounded-lg transition-colors cursor-pointer shadow-2xs"
+                  >
+                    Save & Initialize Supabase
+                  </button>
+                  {config.source === 'local' && (
+                    <button
+                      type="button"
+                      onClick={handleClearCustomConfig}
+                      className="bg-slate-200 hover:bg-slate-300 text-slate-700 font-extrabold text-[11px] px-3 py-2 rounded-lg transition-colors cursor-pointer"
+                    >
+                      Clear Custom
+                    </button>
+                  )}
+                </div>
+              </form>
+            )}
+          </div>
+
 
         </div>
 
