@@ -59,6 +59,11 @@ export default function Login({ onLoginSuccess, onBypass }: LoginProps) {
       if (cfg.url) setCustomUrl(cfg.url);
       if (cfg.key) setCustomKey(cfg.key);
 
+      // Automatically open setup panel if not configured
+      if (!cfg.configured) {
+        setIsConfigOpen(true);
+      }
+
       // Initialize client
       await initSupabase();
     }

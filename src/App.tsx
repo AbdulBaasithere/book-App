@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { getSupabase, initSupabase } from './utils/supabaseClient';
+import { getSupabase, initSupabase, performSupabaseSync } from './utils/supabaseClient';
 import Login from './components/Login';
 
 const originalFetch = typeof window !== 'undefined' ? window.fetch : undefined;
@@ -219,33 +219,17 @@ export default function App() {
     setSyncSuccess(false);
 
     try {
-      const client = getSupabase();
-      const { data: sessionData } = await (client?.auth.getSession() || Promise.resolve({ data: { session: null } }));
-      const token = sessionData?.session?.access_token || '';
-
-      const res = await fetch('/api/supabase/sync', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': token ? `Bearer ${token}` : ''
-        },
-        body: JSON.stringify({
-          userId: user.id,
-          activeBusinessId,
-          businesses,
-          staff,
-          clients,
-          packages,
-          bookings,
-          payments,
-          services
-        })
+      const result = await performSupabaseSync({
+        userId: user.id,
+        activeBusinessId,
+        businesses,
+        staff,
+        clients,
+        packages,
+        bookings,
+        payments,
+        services
       });
-
-      const result = await safeParseResponse(res);
-      if (!res.ok) {
-        throw new Error(result.error || 'Synchronization failed.');
-      }
 
       if (result.success && result.data) {
         const { data } = result;
@@ -369,24 +353,10 @@ export default function App() {
     const loadUserData = async () => {
       setIsSyncing(true);
       try {
-        const client = getSupabase();
-        const { data: sessionData } = await (client?.auth.getSession() || Promise.resolve({ data: { session: null } }));
-        const token = sessionData?.session?.access_token || '';
-
-        const res = await fetch('/api/supabase/sync', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': token ? `Bearer ${token}` : ''
-          },
-          body: JSON.stringify({
-            userId: user.id,
-            fetchOnly: true
-          })
+        const result = await performSupabaseSync({
+          userId: user.id,
+          fetchOnly: true
         });
-
-        const result = await safeParseResponse(res);
-        if (!res.ok) throw new Error(result.error || 'Failed to retrieve cloud database records.');
 
         if (isMounted && result.success && result.data) {
           const { data } = result;
@@ -453,23 +423,16 @@ export default function App() {
             // Push current local state to the database to back it up.
             const initialBizs = businesses.map(b => ({ ...b, id: b.id || 'biz-1' }));
             
-            await fetch('/api/supabase/sync', {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': token ? `Bearer ${token}` : ''
-              },
-              body: JSON.stringify({
-                userId: user.id,
-                activeBusinessId,
-                businesses: initialBizs,
-                staff,
-                clients,
-                packages,
-                bookings,
-                payments,
-                services
-              })
+            await performSupabaseSync({
+              userId: user.id,
+              activeBusinessId,
+              businesses: initialBizs,
+              staff,
+              clients,
+              packages,
+              bookings,
+              payments,
+              services
             });
             console.log('Successfully backed up initial state to database for brand new user.');
           }
