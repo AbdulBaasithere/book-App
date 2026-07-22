@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { getSupabase, initSupabase, performSupabaseSync } from './utils/supabaseClient';
+import { getSupabase, initSupabase, performSupabaseSync, fetchSupabaseConfig } from './utils/supabaseClient';
 import Login from './components/Login';
 
 const originalFetch = typeof window !== 'undefined' ? window.fetch : undefined;
@@ -159,9 +159,8 @@ export default function App() {
   useEffect(() => {
     async function fetchStatus() {
       try {
-        const res = await fetch('/api/supabase/status');
-        const data = await safeParseResponse(res);
-        setSupabaseStatus(data);
+        const cfg = await fetchSupabaseConfig();
+        setSupabaseStatus({ configured: cfg.configured, url: cfg.url });
       } catch (e) {
         console.error('Failed to fetch Supabase status', e);
       }
@@ -769,6 +768,107 @@ export default function App() {
     localStorage.setItem(storageKey, JSON.stringify(value));
   };
 
+  // Helper for automated multi-table Supabase database synchronization
+  const handleDatabaseAutoSync = async (payloadOverrides: Record<string, any> = {}, actionName = 'data update') => {
+    if (!user) return;
+    setIsSyncing(true);
+    setSyncError(null);
+    setSyncSuccess(false);
+
+    try {
+      const payload = {
+        userId: user.id,
+        activeBusinessId,
+        businesses,
+        staff,
+        clients,
+        packages,
+        bookings,
+        payments,
+        services,
+        ...payloadOverrides
+      };
+
+      const result = await performSupabaseSync(payload);
+
+      if (result.success && result.data) {
+        const { data } = result;
+        
+        let targetBizId = activeBusinessId;
+        if (activeBusinessId === 'biz-1' && user) {
+          const mappedId = `biz-1-${user.id}`;
+          const hasMappedBiz = data.businesses?.some((b: any) => b.id === mappedId);
+          if (hasMappedBiz) {
+            targetBizId = mappedId;
+            setActiveBusinessId(mappedId);
+            localStorage.setItem('glance_active_business_id', mappedId);
+          }
+        }
+
+        if (data.businesses?.length > 0) {
+          setBusinesses(data.businesses);
+          localStorage.setItem('glance_businesses', JSON.stringify(data.businesses));
+        }
+
+        // Filter and set for active business
+        const filteredStaff = (data.staff || []).filter((s: any) => s.businessId === targetBizId);
+        setStaff(filteredStaff);
+        localStorage.setItem(`glance_staff_${targetBizId}`, JSON.stringify(filteredStaff));
+
+        const filteredClients = (data.clients || []).filter((c: any) => c.businessId === targetBizId);
+        setClients(filteredClients);
+        localStorage.setItem(`glance_clients_${targetBizId}`, JSON.stringify(filteredClients));
+
+        const filteredPkgs = (data.packages || []).filter((p: any) => p.businessId === targetBizId);
+        setPackages(filteredPkgs);
+        localStorage.setItem(`glance_packages_${targetBizId}`, JSON.stringify(filteredPkgs));
+
+        const filteredBookings = (data.bookings || []).filter((b: any) => b.businessId === targetBizId);
+        setBookings(filteredBookings);
+        localStorage.setItem(`glance_bookings_${targetBizId}`, JSON.stringify(filteredBookings));
+
+        const filteredPayments = (data.payments || []).filter((p: any) => p.businessId === targetBizId);
+        setPayments(filteredPayments);
+        localStorage.setItem(`glance_payments_${targetBizId}`, JSON.stringify(filteredPayments));
+
+        if (data.services && !result.servicesTableMissing) {
+          const filteredServices = (data.services || []).filter((s: any) => s.businessId === targetBizId);
+          setServices(filteredServices);
+          localStorage.setItem(`glance_services_${targetBizId}`, JSON.stringify(filteredServices));
+        }
+
+        // Group and save the rest of the businesses in localStorage
+        data.businesses?.forEach((b: any) => {
+          if (b.id === targetBizId) return;
+          const bStaff = (data.staff || []).filter((s: any) => s.businessId === b.id);
+          const bClients = (data.clients || []).filter((c: any) => c.businessId === b.id);
+          const bPkgs = (data.packages || []).filter((p: any) => p.businessId === b.id);
+          const bBookings = (data.bookings || []).filter((bk: any) => bk.businessId === b.id);
+          const bPayments = (data.payments || []).filter((p: any) => p.businessId === b.id);
+
+          localStorage.setItem(`glance_staff_${b.id}`, JSON.stringify(bStaff));
+          localStorage.setItem(`glance_clients_${b.id}`, JSON.stringify(bClients));
+          localStorage.setItem(`glance_packages_${b.id}`, JSON.stringify(bPkgs));
+          localStorage.setItem(`glance_bookings_${b.id}`, JSON.stringify(bBookings));
+          localStorage.setItem(`glance_payments_${b.id}`, JSON.stringify(bPayments));
+        });
+
+        setSyncSuccess(true);
+        setTimeout(() => setSyncSuccess(false), 4000);
+      }
+    } catch (err: any) {
+      console.error(`Auto-sync failed on ${actionName}:`, err);
+      setSyncError(err.message || `Auto-synchronization failed on ${actionName}.`);
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  const formClientNameFallback = (phone: string) => {
+    const found = clients.find(c => c.phone === phone);
+    return found ? found.name : `Client (${phone})`;
+  };
+
   // 1. Update Business Details
   const handleUpdateBusiness = async (updatedB: Business) => {
     const updatedBizs = businesses.map(b => b.id === activeBusinessId ? { ...updatedB, id: b.id } : b);
@@ -776,106 +876,7 @@ export default function App() {
     localStorage.setItem('glance_businesses', JSON.stringify(updatedBizs));
     localStorage.setItem('glance_business', JSON.stringify(updatedB)); // legacy compatibility
 
-    // If logged in, automatically save/sync with the database!
-    if (user) {
-      setIsSyncing(true);
-      setSyncError(null);
-      setSyncSuccess(false);
-
-      try {
-        const client = getSupabase();
-        const { data: sessionData } = await (client?.auth.getSession() || Promise.resolve({ data: { session: null } }));
-        const token = sessionData?.session?.access_token || '';
-
-        const res = await fetch('/api/supabase/sync', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': token ? `Bearer ${token}` : ''
-          },
-          body: JSON.stringify({
-            userId: user.id,
-            activeBusinessId,
-            businesses: updatedBizs, // send the newly updated business list
-            staff,
-            clients,
-            packages,
-            bookings,
-            payments
-          })
-        });
-
-        const result = await safeParseResponse(res);
-        if (!res.ok) {
-          throw new Error(result.error || 'Auto-sync failed on business profile update.');
-        }
-
-        if (result.success && result.data) {
-          const { data } = result;
-          
-          let targetBizId = activeBusinessId;
-          if (activeBusinessId === 'biz-1' && user) {
-            const mappedId = `biz-1-${user.id}`;
-            const hasMappedBiz = data.businesses?.some((b: any) => b.id === mappedId);
-            if (hasMappedBiz) {
-              targetBizId = mappedId;
-              setActiveBusinessId(mappedId);
-              localStorage.setItem('glance_active_business_id', mappedId);
-            }
-          }
-
-          if (data.businesses?.length > 0) {
-            setBusinesses(data.businesses);
-            localStorage.setItem('glance_businesses', JSON.stringify(data.businesses));
-          }
-
-          // Filter and set for active business
-          const filteredStaff = (data.staff || []).filter((s: any) => s.businessId === targetBizId);
-          setStaff(filteredStaff);
-          localStorage.setItem(`glance_staff_${targetBizId}`, JSON.stringify(filteredStaff));
-
-          const filteredClients = (data.clients || []).filter((c: any) => c.businessId === targetBizId);
-          setClients(filteredClients);
-          localStorage.setItem(`glance_clients_${targetBizId}`, JSON.stringify(filteredClients));
-
-          const filteredPkgs = (data.packages || []).filter((p: any) => p.businessId === targetBizId);
-          setPackages(filteredPkgs);
-          localStorage.setItem(`glance_packages_${targetBizId}`, JSON.stringify(filteredPkgs));
-
-          const filteredBookings = (data.bookings || []).filter((b: any) => b.businessId === targetBizId);
-          setBookings(filteredBookings);
-          localStorage.setItem(`glance_bookings_${targetBizId}`, JSON.stringify(filteredBookings));
-
-          const filteredPayments = (data.payments || []).filter((p: any) => p.businessId === targetBizId);
-          setPayments(filteredPayments);
-          localStorage.setItem(`glance_payments_${targetBizId}`, JSON.stringify(filteredPayments));
-
-          // Group and save the rest of the businesses in localStorage
-          data.businesses.forEach((b: any) => {
-            if (b.id === targetBizId) return;
-            const bStaff = (data.staff || []).filter((s: any) => s.businessId === b.id);
-            const bClients = (data.clients || []).filter((c: any) => c.businessId === b.id);
-            const bPkgs = (data.packages || []).filter((p: any) => p.businessId === b.id);
-            const bBookings = (data.bookings || []).filter((bk: any) => bk.businessId === b.id);
-            const bPayments = (data.payments || []).filter((p: any) => p.businessId === b.id);
-
-            localStorage.setItem(`glance_staff_${b.id}`, JSON.stringify(bStaff));
-            localStorage.setItem(`glance_clients_${b.id}`, JSON.stringify(bClients));
-            localStorage.setItem(`glance_packages_${b.id}`, JSON.stringify(bPkgs));
-            localStorage.setItem(`glance_bookings_${b.id}`, JSON.stringify(bBookings));
-            localStorage.setItem(`glance_payments_${b.id}`, JSON.stringify(bPayments));
-          });
-
-          setSyncSuccess(true);
-          setTimeout(() => setSyncSuccess(false), 4000);
-        }
-      } catch (err: any) {
-        console.error('Auto-sync failed on business profile update:', err);
-        setSyncError(err.message || 'Auto-synchronization failed on business profile update.');
-      } finally {
-        setIsSyncing(false);
-      }
-    }
+    await handleDatabaseAutoSync({ businesses: updatedBizs }, 'business profile update');
   };
 
   // Switch Active Business
@@ -889,56 +890,7 @@ export default function App() {
     const updated = [...services, { ...newService, businessId: activeBusinessId } as any];
     saveState('glance_services', updated, setServices);
 
-    // If logged in, automatically save/sync with the database!
-    if (user && !isBypassed) {
-      setIsSyncing(true);
-      try {
-        const client = getSupabase();
-        const { data: sessionData } = await (client?.auth.getSession() || Promise.resolve({ data: { session: null } }));
-        const token = sessionData?.session?.access_token || '';
-
-        const res = await fetch('/api/supabase/sync', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': token ? `Bearer ${token}` : ''
-          },
-          body: JSON.stringify({
-            userId: user.id,
-            activeBusinessId,
-            businesses,
-            staff,
-            clients,
-            packages,
-            bookings,
-            payments,
-            services: updated
-          })
-        });
-
-        const result = await safeParseResponse(res);
-        if (!res.ok) {
-          throw new Error(result.error || 'Auto-sync failed on adding service.');
-        }
-
-        if (result.success && result.data) {
-          const { data } = result;
-          if (!result.servicesTableMissing) {
-            const filteredServices = (data.services || []).filter((s: any) => s.businessId === activeBusinessId);
-            setServices(filteredServices);
-            localStorage.setItem(`glance_services_${activeBusinessId}`, JSON.stringify(filteredServices));
-          }
-          
-          setSyncSuccess(true);
-          setTimeout(() => setSyncSuccess(false), 4000);
-        }
-      } catch (err: any) {
-        console.error('Auto-sync failed on adding service:', err);
-        setSyncError(err.message || 'Auto-synchronization failed on adding service.');
-      } finally {
-        setIsSyncing(false);
-      }
-    }
+    await handleDatabaseAutoSync({ services: updated }, 'adding service');
   };
 
   const handleUpdateService = async (originalName: string, updatedService: Service) => {
@@ -950,112 +902,14 @@ export default function App() {
     });
     saveState('glance_services', updated, setServices);
 
-    // If logged in, automatically save/sync with the database!
-    if (user && !isBypassed) {
-      setIsSyncing(true);
-      try {
-        const client = getSupabase();
-        const { data: sessionData } = await (client?.auth.getSession() || Promise.resolve({ data: { session: null } }));
-        const token = sessionData?.session?.access_token || '';
-
-        const res = await fetch('/api/supabase/sync', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': token ? `Bearer ${token}` : ''
-          },
-          body: JSON.stringify({
-            userId: user.id,
-            activeBusinessId,
-            businesses,
-            staff,
-            clients,
-            packages,
-            bookings,
-            payments,
-            services: updated
-          })
-        });
-
-        const result = await safeParseResponse(res);
-        if (!res.ok) {
-          throw new Error(result.error || 'Auto-sync failed on updating service.');
-        }
-
-        if (result.success && result.data) {
-          const { data } = result;
-          if (!result.servicesTableMissing) {
-            const filteredServices = (data.services || []).filter((s: any) => s.businessId === activeBusinessId);
-            setServices(filteredServices);
-            localStorage.setItem(`glance_services_${activeBusinessId}`, JSON.stringify(filteredServices));
-          }
-          
-          setSyncSuccess(true);
-          setTimeout(() => setSyncSuccess(false), 4000);
-        }
-      } catch (err: any) {
-        console.error('Auto-sync failed on updating service:', err);
-        setSyncError(err.message || 'Auto-synchronization failed on updating service.');
-      } finally {
-        setIsSyncing(false);
-      }
-    }
+    await handleDatabaseAutoSync({ services: updated }, 'updating service');
   };
 
   const handleDeleteService = async (serviceName: string) => {
     const updated = services.filter(s => s.name !== serviceName);
     saveState('glance_services', updated, setServices);
 
-    // If logged in, automatically save/sync with the database!
-    if (user && !isBypassed) {
-      setIsSyncing(true);
-      try {
-        const client = getSupabase();
-        const { data: sessionData } = await (client?.auth.getSession() || Promise.resolve({ data: { session: null } }));
-        const token = sessionData?.session?.access_token || '';
-
-        const res = await fetch('/api/supabase/sync', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': token ? `Bearer ${token}` : ''
-          },
-          body: JSON.stringify({
-            userId: user.id,
-            activeBusinessId,
-            businesses,
-            staff,
-            clients,
-            packages,
-            bookings,
-            payments,
-            services: updated
-          })
-        });
-
-        const result = await safeParseResponse(res);
-        if (!res.ok) {
-          throw new Error(result.error || 'Auto-sync failed on deleting service.');
-        }
-
-        if (result.success && result.data) {
-          const { data } = result;
-          if (!result.servicesTableMissing) {
-            const filteredServices = (data.services || []).filter((s: any) => s.businessId === activeBusinessId);
-            setServices(filteredServices);
-            localStorage.setItem(`glance_services_${activeBusinessId}`, JSON.stringify(filteredServices));
-          }
-          
-          setSyncSuccess(true);
-          setTimeout(() => setSyncSuccess(false), 4000);
-        }
-      } catch (err: any) {
-        console.error('Auto-sync failed on deleting service:', err);
-        setSyncError(err.message || 'Auto-synchronization failed on deleting service.');
-      } finally {
-        setIsSyncing(false);
-      }
-    }
+    await handleDatabaseAutoSync({ services: updated }, 'deleting service');
   };
 
   // Add a new business portal
@@ -1110,218 +964,23 @@ export default function App() {
     const updated = [...staff, freshStaff];
     saveState('glance_staff', updated, setStaff);
 
-    // If logged in, automatically save/sync with the database!
-    if (user) {
-      setIsSyncing(true);
-      setSyncError(null);
-      setSyncSuccess(false);
-
-      try {
-        const client = getSupabase();
-        const { data: sessionData } = await (client?.auth.getSession() || Promise.resolve({ data: { session: null } }));
-        const token = sessionData?.session?.access_token || '';
-
-        const res = await fetch('/api/supabase/sync', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': token ? `Bearer ${token}` : ''
-          },
-          body: JSON.stringify({
-            userId: user.id,
-            activeBusinessId,
-            businesses,
-            staff: updated, // Send the newly updated staff list
-            clients,
-            packages,
-            bookings,
-            payments
-          })
-        });
-
-        const result = await safeParseResponse(res);
-        if (!res.ok) {
-          throw new Error(result.error || 'Auto-sync failed on adding staff.');
-        }
-
-        if (result.success && result.data) {
-          const { data } = result;
-          
-          let targetBizId = activeBusinessId;
-          if (activeBusinessId === 'biz-1' && user) {
-            const mappedId = `biz-1-${user.id}`;
-            const hasMappedBiz = data.businesses?.some((b: any) => b.id === mappedId);
-            if (hasMappedBiz) {
-              targetBizId = mappedId;
-              setActiveBusinessId(mappedId);
-              localStorage.setItem('glance_active_business_id', mappedId);
-            }
-          }
-
-          if (data.businesses?.length > 0) {
-            setBusinesses(data.businesses);
-            localStorage.setItem('glance_businesses', JSON.stringify(data.businesses));
-          }
-
-          // Filter and set for active business
-          const filteredStaff = (data.staff || []).filter((s: any) => s.businessId === targetBizId);
-          setStaff(filteredStaff);
-          localStorage.setItem(`glance_staff_${targetBizId}`, JSON.stringify(filteredStaff));
-
-          const filteredClients = (data.clients || []).filter((c: any) => c.businessId === targetBizId);
-          setClients(filteredClients);
-          localStorage.setItem(`glance_clients_${targetBizId}`, JSON.stringify(filteredClients));
-
-          const filteredPkgs = (data.packages || []).filter((p: any) => p.businessId === targetBizId);
-          setPackages(filteredPkgs);
-          localStorage.setItem(`glance_packages_${targetBizId}`, JSON.stringify(filteredPkgs));
-
-          const filteredBookings = (data.bookings || []).filter((b: any) => b.businessId === targetBizId);
-          setBookings(filteredBookings);
-          localStorage.setItem(`glance_bookings_${targetBizId}`, JSON.stringify(filteredBookings));
-
-          const filteredPayments = (data.payments || []).filter((p: any) => p.businessId === targetBizId);
-          setPayments(filteredPayments);
-          localStorage.setItem(`glance_payments_${targetBizId}`, JSON.stringify(filteredPayments));
-
-          // Group and save the rest of the businesses in localStorage
-          data.businesses.forEach((b: any) => {
-            if (b.id === targetBizId) return;
-            const bStaff = (data.staff || []).filter((s: any) => s.businessId === b.id);
-            const bClients = (data.clients || []).filter((c: any) => c.businessId === b.id);
-            const bPkgs = (data.packages || []).filter((p: any) => p.businessId === b.id);
-            const bBookings = (data.bookings || []).filter((bk: any) => bk.businessId === b.id);
-            const bPayments = (data.payments || []).filter((p: any) => p.businessId === b.id);
-
-            localStorage.setItem(`glance_staff_${b.id}`, JSON.stringify(bStaff));
-            localStorage.setItem(`glance_clients_${b.id}`, JSON.stringify(bClients));
-            localStorage.setItem(`glance_packages_${b.id}`, JSON.stringify(bPkgs));
-            localStorage.setItem(`glance_bookings_${b.id}`, JSON.stringify(bBookings));
-            localStorage.setItem(`glance_payments_${b.id}`, JSON.stringify(bPayments));
-          });
-
-          setSyncSuccess(true);
-          setTimeout(() => setSyncSuccess(false), 4000);
-        }
-      } catch (err: any) {
-        console.error('Auto-sync failed on adding staff:', err);
-        setSyncError(err.message || 'Auto-synchronization failed on adding staff.');
-      } finally {
-        setIsSyncing(false);
-      }
-    }
+    await handleDatabaseAutoSync({ staff: updated }, 'adding staff');
   };
 
   const handleDeleteStaff = async (staffId: string) => {
     const updated = staff.filter(s => s.id !== staffId);
     saveState('glance_staff', updated, setStaff);
 
-    // If logged in, automatically save/sync with the database!
     if (user) {
-      setIsSyncing(true);
-      setSyncError(null);
-      setSyncSuccess(false);
-
-      try {
-        const client = getSupabase();
-        
-        // 1. Delete the staff member row from the database first
-        if (client) {
+      const client = getSupabase();
+      if (client) {
+        try {
           await client.from('staff').delete().eq('id', staffId).eq('user_id', user.id);
+        } catch (e) {
+          console.warn('Direct staff delete warning:', e);
         }
-
-        // 2. Fetch/sync updated state from the server
-        const { data: sessionData } = await (client?.auth.getSession() || Promise.resolve({ data: { session: null } }));
-        const token = sessionData?.session?.access_token || '';
-
-        const res = await fetch('/api/supabase/sync', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': token ? `Bearer ${token}` : ''
-          },
-          body: JSON.stringify({
-            userId: user.id,
-            activeBusinessId,
-            businesses,
-            staff: updated, // Send the updated staff list after deletion
-            clients,
-            packages,
-            bookings,
-            payments
-          })
-        });
-
-        const result = await safeParseResponse(res);
-        if (!res.ok) {
-          throw new Error(result.error || 'Auto-sync failed on deleting staff.');
-        }
-
-        if (result.success && result.data) {
-          const { data } = result;
-          
-          let targetBizId = activeBusinessId;
-          if (activeBusinessId === 'biz-1' && user) {
-            const mappedId = `biz-1-${user.id}`;
-            const hasMappedBiz = data.businesses?.some((b: any) => b.id === mappedId);
-            if (hasMappedBiz) {
-              targetBizId = mappedId;
-              setActiveBusinessId(mappedId);
-              localStorage.setItem('glance_active_business_id', mappedId);
-            }
-          }
-
-          if (data.businesses?.length > 0) {
-            setBusinesses(data.businesses);
-            localStorage.setItem('glance_businesses', JSON.stringify(data.businesses));
-          }
-
-          // Filter and set for active business
-          const filteredStaff = (data.staff || []).filter((s: any) => s.businessId === targetBizId);
-          setStaff(filteredStaff);
-          localStorage.setItem(`glance_staff_${targetBizId}`, JSON.stringify(filteredStaff));
-
-          const filteredClients = (data.clients || []).filter((c: any) => c.businessId === targetBizId);
-          setClients(filteredClients);
-          localStorage.setItem(`glance_clients_${targetBizId}`, JSON.stringify(filteredClients));
-
-          const filteredPkgs = (data.packages || []).filter((p: any) => p.businessId === targetBizId);
-          setPackages(filteredPkgs);
-          localStorage.setItem(`glance_packages_${targetBizId}`, JSON.stringify(filteredPkgs));
-
-          const filteredBookings = (data.bookings || []).filter((b: any) => b.businessId === targetBizId);
-          setBookings(filteredBookings);
-          localStorage.setItem(`glance_bookings_${targetBizId}`, JSON.stringify(filteredBookings));
-
-          const filteredPayments = (data.payments || []).filter((p: any) => p.businessId === targetBizId);
-          setPayments(filteredPayments);
-          localStorage.setItem(`glance_payments_${targetBizId}`, JSON.stringify(filteredPayments));
-
-          // Group and save the rest of the businesses in localStorage
-          data.businesses.forEach((b: any) => {
-            if (b.id === targetBizId) return;
-            const bStaff = (data.staff || []).filter((s: any) => s.businessId === b.id);
-            const bClients = (data.clients || []).filter((c: any) => c.businessId === b.id);
-            const bPkgs = (data.packages || []).filter((p: any) => p.businessId === b.id);
-            const bBookings = (data.bookings || []).filter((bk: any) => bk.businessId === b.id);
-            const bPayments = (data.payments || []).filter((p: any) => p.businessId === b.id);
-
-            localStorage.setItem(`glance_staff_${b.id}`, JSON.stringify(bStaff));
-            localStorage.setItem(`glance_clients_${b.id}`, JSON.stringify(bClients));
-            localStorage.setItem(`glance_packages_${b.id}`, JSON.stringify(bPkgs));
-            localStorage.setItem(`glance_bookings_${b.id}`, JSON.stringify(bBookings));
-            localStorage.setItem(`glance_payments_${b.id}`, JSON.stringify(bPayments));
-          });
-
-          setSyncSuccess(true);
-          setTimeout(() => setSyncSuccess(false), 4000);
-        }
-      } catch (err: any) {
-        console.error('Auto-sync failed on deleting staff:', err);
-        setSyncError(err.message || 'Auto-synchronization failed on deleting staff.');
-      } finally {
-        setIsSyncing(false);
       }
+      await handleDatabaseAutoSync({ staff: updated }, 'deleting staff');
     }
   };
 
@@ -1336,216 +995,17 @@ export default function App() {
     const updated = [...clients, freshClient];
     saveState('glance_clients', updated, setClients);
 
-    // If logged in, automatically save/sync with the database!
-    if (user) {
-      setIsSyncing(true);
-      setSyncError(null);
-      setSyncSuccess(false);
-
-      try {
-        const client = getSupabase();
-        const { data: sessionData } = await (client?.auth.getSession() || Promise.resolve({ data: { session: null } }));
-        const token = sessionData?.session?.access_token || '';
-
-        const res = await fetch('/api/supabase/sync', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': token ? `Bearer ${token}` : ''
-          },
-          body: JSON.stringify({
-            userId: user.id,
-            activeBusinessId,
-            businesses,
-            staff,
-            clients: updated, // Send the newly updated clients list
-            packages,
-            bookings,
-            payments
-          })
-        });
-
-        const result = await safeParseResponse(res);
-        if (!res.ok) {
-          throw new Error(result.error || 'Auto-sync failed on adding client.');
-        }
-
-        if (result.success && result.data) {
-          const { data } = result;
-          
-          let targetBizId = activeBusinessId;
-          if (activeBusinessId === 'biz-1' && user) {
-            const mappedId = `biz-1-${user.id}`;
-            const hasMappedBiz = data.businesses?.some((b: any) => b.id === mappedId);
-            if (hasMappedBiz) {
-              targetBizId = mappedId;
-              setActiveBusinessId(mappedId);
-              localStorage.setItem('glance_active_business_id', mappedId);
-            }
-          }
-
-          if (data.businesses?.length > 0) {
-            setBusinesses(data.businesses);
-            localStorage.setItem('glance_businesses', JSON.stringify(data.businesses));
-          }
-
-          // Filter and set for active business
-          const filteredStaff = (data.staff || []).filter((s: any) => s.businessId === targetBizId);
-          setStaff(filteredStaff);
-          localStorage.setItem(`glance_staff_${targetBizId}`, JSON.stringify(filteredStaff));
-
-          const filteredClients = (data.clients || []).filter((c: any) => c.businessId === targetBizId);
-          setClients(filteredClients);
-          localStorage.setItem(`glance_clients_${targetBizId}`, JSON.stringify(filteredClients));
-
-          const filteredPkgs = (data.packages || []).filter((p: any) => p.businessId === targetBizId);
-          setPackages(filteredPkgs);
-          localStorage.setItem(`glance_packages_${targetBizId}`, JSON.stringify(filteredPkgs));
-
-          const filteredBookings = (data.bookings || []).filter((b: any) => b.businessId === targetBizId);
-          setBookings(filteredBookings);
-          localStorage.setItem(`glance_bookings_${targetBizId}`, JSON.stringify(filteredBookings));
-
-          const filteredPayments = (data.payments || []).filter((p: any) => p.businessId === targetBizId);
-          setPayments(filteredPayments);
-          localStorage.setItem(`glance_payments_${targetBizId}`, JSON.stringify(filteredPayments));
-
-          // Group and save the rest of the businesses in localStorage
-          data.businesses.forEach((b: any) => {
-            if (b.id === targetBizId) return;
-            const bStaff = (data.staff || []).filter((s: any) => s.businessId === b.id);
-            const bClients = (data.clients || []).filter((c: any) => c.businessId === b.id);
-            const bPkgs = (data.packages || []).filter((p: any) => p.businessId === b.id);
-            const bBookings = (data.bookings || []).filter((bk: any) => bk.businessId === b.id);
-            const bPayments = (data.payments || []).filter((p: any) => p.businessId === b.id);
-
-            localStorage.setItem(`glance_staff_${b.id}`, JSON.stringify(bStaff));
-            localStorage.setItem(`glance_clients_${b.id}`, JSON.stringify(bClients));
-            localStorage.setItem(`glance_packages_${b.id}`, JSON.stringify(bPkgs));
-            localStorage.setItem(`glance_bookings_${b.id}`, JSON.stringify(bBookings));
-            localStorage.setItem(`glance_payments_${b.id}`, JSON.stringify(bPayments));
-          });
-
-          setSyncSuccess(true);
-          setTimeout(() => setSyncSuccess(false), 4000);
-        }
-      } catch (err: any) {
-        console.error('Auto-sync failed on adding client:', err);
-        setSyncError(err.message || 'Auto-synchronization failed on adding client.');
-      } finally {
-        setIsSyncing(false);
-      }
-    }
+    await handleDatabaseAutoSync({ clients: updated }, 'adding client');
   };
 
   const handleUpdateClientNotes = async (clientId: string, notes: string) => {
     const updated = clients.map(c => c.id === clientId ? { ...c, notes } : c);
     saveState('glance_clients', updated, setClients);
 
-    // If logged in, automatically save/sync with the database!
-    if (user) {
-      setIsSyncing(true);
-      setSyncError(null);
-      setSyncSuccess(false);
-
-      try {
-        const client = getSupabase();
-        const { data: sessionData } = await (client?.auth.getSession() || Promise.resolve({ data: { session: null } }));
-        const token = sessionData?.session?.access_token || '';
-
-        const res = await fetch('/api/supabase/sync', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': token ? `Bearer ${token}` : ''
-          },
-          body: JSON.stringify({
-            userId: user.id,
-            activeBusinessId,
-            businesses,
-            staff,
-            clients: updated, // Send the newly updated clients list
-            packages,
-            bookings,
-            payments
-          })
-        });
-
-        const result = await safeParseResponse(res);
-        if (!res.ok) {
-          throw new Error(result.error || 'Auto-sync failed on updating client notes.');
-        }
-
-        if (result.success && result.data) {
-          const { data } = result;
-          
-          let targetBizId = activeBusinessId;
-          if (activeBusinessId === 'biz-1' && user) {
-            const mappedId = `biz-1-${user.id}`;
-            const hasMappedBiz = data.businesses?.some((b: any) => b.id === mappedId);
-            if (hasMappedBiz) {
-              targetBizId = mappedId;
-              setActiveBusinessId(mappedId);
-              localStorage.setItem('glance_active_business_id', mappedId);
-            }
-          }
-
-          if (data.businesses?.length > 0) {
-            setBusinesses(data.businesses);
-            localStorage.setItem('glance_businesses', JSON.stringify(data.businesses));
-          }
-
-          // Filter and set for active business
-          const filteredStaff = (data.staff || []).filter((s: any) => s.businessId === targetBizId);
-          setStaff(filteredStaff);
-          localStorage.setItem(`glance_staff_${targetBizId}`, JSON.stringify(filteredStaff));
-
-          const filteredClients = (data.clients || []).filter((c: any) => c.businessId === targetBizId);
-          setClients(filteredClients);
-          localStorage.setItem(`glance_clients_${targetBizId}`, JSON.stringify(filteredClients));
-
-          const filteredPkgs = (data.packages || []).filter((p: any) => p.businessId === targetBizId);
-          setPackages(filteredPkgs);
-          localStorage.setItem(`glance_packages_${targetBizId}`, JSON.stringify(filteredPkgs));
-
-          const filteredBookings = (data.bookings || []).filter((b: any) => b.businessId === targetBizId);
-          setBookings(filteredBookings);
-          localStorage.setItem(`glance_bookings_${targetBizId}`, JSON.stringify(filteredBookings));
-
-          const filteredPayments = (data.payments || []).filter((p: any) => p.businessId === targetBizId);
-          setPayments(filteredPayments);
-          localStorage.setItem(`glance_payments_${targetBizId}`, JSON.stringify(filteredPayments));
-
-          // Group and save the rest of the businesses in localStorage
-          data.businesses.forEach((b: any) => {
-            if (b.id === targetBizId) return;
-            const bStaff = (data.staff || []).filter((s: any) => s.businessId === b.id);
-            const bClients = (data.clients || []).filter((c: any) => c.businessId === b.id);
-            const bPkgs = (data.packages || []).filter((p: any) => p.businessId === b.id);
-            const bBookings = (data.bookings || []).filter((bk: any) => bk.businessId === b.id);
-            const bPayments = (data.payments || []).filter((p: any) => p.businessId === b.id);
-
-            localStorage.setItem(`glance_staff_${b.id}`, JSON.stringify(bStaff));
-            localStorage.setItem(`glance_clients_${b.id}`, JSON.stringify(bClients));
-            localStorage.setItem(`glance_packages_${b.id}`, JSON.stringify(bPkgs));
-            localStorage.setItem(`glance_bookings_${b.id}`, JSON.stringify(bBookings));
-            localStorage.setItem(`glance_payments_${b.id}`, JSON.stringify(bPayments));
-          });
-
-          setSyncSuccess(true);
-          setTimeout(() => setSyncSuccess(false), 4000);
-        }
-      } catch (err: any) {
-        console.error('Auto-sync failed on updating client notes:', err);
-        setSyncError(err.message || 'Auto-synchronization failed on updating client notes.');
-      } finally {
-        setIsSyncing(false);
-      }
-    }
+    await handleDatabaseAutoSync({ clients: updated }, 'updating client notes');
   };
 
   const handleUpdateClient = async (updatedC: Client) => {
-    // Check if phone number changed
     const originalClient = clients.find(c => c.id === updatedC.id);
     let nextClients = clients.map(c => c.id === updatedC.id ? updatedC : c);
     let nextBookings = bookings;
@@ -1553,7 +1013,6 @@ export default function App() {
     let nextPayments = payments;
 
     if (originalClient && originalClient.phone !== updatedC.phone) {
-      // Cascade phone update to bookings, packages, payments
       nextBookings = bookings.map(b => b.clientPhone === originalClient.phone ? { ...b, clientPhone: updatedC.phone, clientName: updatedC.name } : b);
       nextPackages = packages.map(p => p.clientPhone === originalClient.phone ? { ...p, clientPhone: updatedC.phone } : p);
       nextPayments = payments.map(p => p.clientPhone === originalClient.phone ? { ...p, clientPhone: updatedC.phone, clientName: updatedC.name } : p);
@@ -1562,7 +1021,6 @@ export default function App() {
       saveState('glance_packages', nextPackages, setPackages);
       saveState('glance_payments', nextPayments, setPayments);
     } else if (originalClient && originalClient.name !== updatedC.name) {
-      // Update name in bookings and payments
       nextBookings = bookings.map(b => b.clientPhone === updatedC.phone ? { ...b, clientName: updatedC.name } : b);
       nextPayments = payments.map(p => p.clientPhone === updatedC.phone ? { ...p, clientName: updatedC.name } : p);
 
@@ -1572,106 +1030,12 @@ export default function App() {
 
     saveState('glance_clients', nextClients, setClients);
 
-    // If logged in, automatically save/sync with the database!
-    if (user) {
-      setIsSyncing(true);
-      setSyncError(null);
-      setSyncSuccess(false);
-
-      try {
-        const client = getSupabase();
-        const { data: sessionData } = await (client?.auth.getSession() || Promise.resolve({ data: { session: null } }));
-        const token = sessionData?.session?.access_token || '';
-
-        const res = await fetch('/api/supabase/sync', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': token ? `Bearer ${token}` : ''
-          },
-          body: JSON.stringify({
-            userId: user.id,
-            activeBusinessId,
-            businesses,
-            staff,
-            clients: nextClients, // Send the newly updated clients list
-            packages: nextPackages,
-            bookings: nextBookings,
-            payments: nextPayments
-          })
-        });
-
-        const result = await safeParseResponse(res);
-        if (!res.ok) {
-          throw new Error(result.error || 'Auto-sync failed on updating client.');
-        }
-
-        if (result.success && result.data) {
-          const { data } = result;
-          
-          let targetBizId = activeBusinessId;
-          if (activeBusinessId === 'biz-1' && user) {
-            const mappedId = `biz-1-${user.id}`;
-            const hasMappedBiz = data.businesses?.some((b: any) => b.id === mappedId);
-            if (hasMappedBiz) {
-              targetBizId = mappedId;
-              setActiveBusinessId(mappedId);
-              localStorage.setItem('glance_active_business_id', mappedId);
-            }
-          }
-
-          if (data.businesses?.length > 0) {
-            setBusinesses(data.businesses);
-            localStorage.setItem('glance_businesses', JSON.stringify(data.businesses));
-          }
-
-          // Filter and set for active business
-          const filteredStaff = (data.staff || []).filter((s: any) => s.businessId === targetBizId);
-          setStaff(filteredStaff);
-          localStorage.setItem(`glance_staff_${targetBizId}`, JSON.stringify(filteredStaff));
-
-          const filteredClients = (data.clients || []).filter((c: any) => c.businessId === targetBizId);
-          setClients(filteredClients);
-          localStorage.setItem(`glance_clients_${targetBizId}`, JSON.stringify(filteredClients));
-
-          const filteredPkgs = (data.packages || []).filter((p: any) => p.businessId === targetBizId);
-          setPackages(filteredPkgs);
-          localStorage.setItem(`glance_packages_${targetBizId}`, JSON.stringify(filteredPkgs));
-
-          const filteredBookings = (data.bookings || []).filter((b: any) => b.businessId === targetBizId);
-          setBookings(filteredBookings);
-          localStorage.setItem(`glance_bookings_${targetBizId}`, JSON.stringify(filteredBookings));
-
-          const filteredPayments = (data.payments || []).filter((p: any) => p.businessId === targetBizId);
-          setPayments(filteredPayments);
-          localStorage.setItem(`glance_payments_${targetBizId}`, JSON.stringify(filteredPayments));
-
-          // Group and save the rest of the businesses in localStorage
-          data.businesses.forEach((b: any) => {
-            if (b.id === targetBizId) return;
-            const bStaff = (data.staff || []).filter((s: any) => s.businessId === b.id);
-            const bClients = (data.clients || []).filter((c: any) => c.businessId === b.id);
-            const bPkgs = (data.packages || []).filter((p: any) => p.businessId === b.id);
-            const bBookings = (data.bookings || []).filter((bk: any) => bk.businessId === b.id);
-            const bPayments = (data.payments || []).filter((p: any) => p.businessId === b.id);
-
-            localStorage.setItem(`glance_staff_${b.id}`, JSON.stringify(bStaff));
-            localStorage.setItem(`glance_clients_${b.id}`, JSON.stringify(bClients));
-            localStorage.setItem(`glance_packages_${b.id}`, JSON.stringify(bPkgs));
-            localStorage.setItem(`glance_bookings_${b.id}`, JSON.stringify(bBookings));
-            localStorage.setItem(`glance_payments_${b.id}`, JSON.stringify(bPayments));
-          });
-
-          setSyncSuccess(true);
-          setTimeout(() => setSyncSuccess(false), 4000);
-        }
-      } catch (err: any) {
-        console.error('Auto-sync failed on updating client:', err);
-        setSyncError(err.message || 'Auto-synchronization failed on updating client.');
-      } finally {
-        setIsSyncing(false);
-      }
-    }
+    await handleDatabaseAutoSync({
+      clients: nextClients,
+      packages: nextPackages,
+      bookings: nextBookings,
+      payments: nextPayments
+    }, 'updating client');
   };
 
   // 4. Booking creation & state orchestration
@@ -1712,22 +1076,20 @@ export default function App() {
       saveState('glance_packages', nextPackages, setPackages);
     }
 
-    // Save bookings list
     const nextBookings = [...bookings, freshBooking];
     saveState('glance_bookings', nextBookings, setBookings);
 
-    // Create corresponding payment ledger record
     const paymentId = `pay-${Date.now()}`;
     const freshPayment: Payment = {
       id: paymentId,
       clientPhone: newB.clientPhone,
       clientName: newB.clientName,
       amount: newB.linkedPackageId ? 0 : newB.price,
-      method: 'upi', // default to UPI tagging
+      method: 'upi',
       date: newB.dateTime.split('T')[0],
       type: 'booking',
       linkedBookingId: bookingId,
-      status: newB.linkedPackageId ? 'paid' : 'due', // package is prepaid, otherwise mark as due until complete
+      status: newB.linkedPackageId ? 'paid' : 'due',
       businessId: activeBusinessId
     };
     const nextPayments = [...payments, freshPayment];
@@ -1740,123 +1102,26 @@ export default function App() {
       type: newB.linkedPackageId ? 'booking_created' : 'manual_recorded'
     });
 
-    // If logged in, automatically save/sync with the database!
-    if (user) {
-      setIsSyncing(true);
-      setSyncError(null);
-      setSyncSuccess(false);
-
-      try {
-        const client = getSupabase();
-        const { data: sessionData } = await (client?.auth.getSession() || Promise.resolve({ data: { session: null } }));
-        const token = sessionData?.session?.access_token || '';
-
-        const res = await fetch('/api/supabase/sync', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': token ? `Bearer ${token}` : ''
-          },
-          body: JSON.stringify({
-            userId: user.id,
-            activeBusinessId,
-            businesses,
-            staff,
-            clients: nextClients,
-            packages: nextPackages,
-            bookings: nextBookings,
-            payments: nextPayments
-          })
-        });
-
-        const result = await safeParseResponse(res);
-        if (!res.ok) {
-          throw new Error(result.error || 'Auto-sync failed on creating booking.');
-        }
-
-        if (result.success && result.data) {
-          const { data } = result;
-          
-          let targetBizId = activeBusinessId;
-          if (activeBusinessId === 'biz-1' && user) {
-            const mappedId = `biz-1-${user.id}`;
-            const hasMappedBiz = data.businesses?.some((b: any) => b.id === mappedId);
-            if (hasMappedBiz) {
-              targetBizId = mappedId;
-              setActiveBusinessId(mappedId);
-              localStorage.setItem('glance_active_business_id', mappedId);
-            }
-          }
-
-          if (data.businesses?.length > 0) {
-            setBusinesses(data.businesses);
-            localStorage.setItem('glance_businesses', JSON.stringify(data.businesses));
-          }
-
-          // Filter and set for active business
-          const filteredStaff = (data.staff || []).filter((s: any) => s.businessId === targetBizId);
-          setStaff(filteredStaff);
-          localStorage.setItem(`glance_staff_${targetBizId}`, JSON.stringify(filteredStaff));
-
-          const filteredClients = (data.clients || []).filter((c: any) => c.businessId === targetBizId);
-          setClients(filteredClients);
-          localStorage.setItem(`glance_clients_${targetBizId}`, JSON.stringify(filteredClients));
-
-          const filteredPkgs = (data.packages || []).filter((p: any) => p.businessId === targetBizId);
-          setPackages(filteredPkgs);
-          localStorage.setItem(`glance_packages_${targetBizId}`, JSON.stringify(filteredPkgs));
-
-          const filteredBookings = (data.bookings || []).filter((b: any) => b.businessId === targetBizId);
-          setBookings(filteredBookings);
-          localStorage.setItem(`glance_bookings_${targetBizId}`, JSON.stringify(filteredBookings));
-
-          const filteredPayments = (data.payments || []).filter((p: any) => p.businessId === targetBizId);
-          setPayments(filteredPayments);
-          localStorage.setItem(`glance_payments_${targetBizId}`, JSON.stringify(filteredPayments));
-
-          // Group and save the rest of the businesses in localStorage
-          data.businesses.forEach((b: any) => {
-            if (b.id === targetBizId) return;
-            const bStaff = (data.staff || []).filter((s: any) => s.businessId === b.id);
-            const bClients = (data.clients || []).filter((c: any) => c.businessId === b.id);
-            const bPkgs = (data.packages || []).filter((p: any) => p.businessId === b.id);
-            const bBookings = (data.bookings || []).filter((bk: any) => bk.businessId === b.id);
-            const bPayments = (data.payments || []).filter((p: any) => p.businessId === b.id);
-
-            localStorage.setItem(`glance_staff_${b.id}`, JSON.stringify(bStaff));
-            localStorage.setItem(`glance_clients_${b.id}`, JSON.stringify(bClients));
-            localStorage.setItem(`glance_packages_${b.id}`, JSON.stringify(bPkgs));
-            localStorage.setItem(`glance_bookings_${b.id}`, JSON.stringify(bBookings));
-            localStorage.setItem(`glance_payments_${b.id}`, JSON.stringify(bPayments));
-          });
-
-          setSyncSuccess(true);
-          setTimeout(() => setSyncSuccess(false), 4000);
-        }
-      } catch (err: any) {
-        console.error('Auto-sync failed on creating booking:', err);
-        setSyncError(err.message || 'Auto-synchronization failed on creating booking.');
-      } finally {
-        setIsSyncing(false);
-      }
-    }
+    await handleDatabaseAutoSync({
+      clients: nextClients,
+      packages: nextPackages,
+      bookings: nextBookings,
+      payments: nextPayments
+    }, 'creating booking');
   };
 
-  // 5. Complete / Cancel Bookings with instant ledger refund logic
+  // 5. Complete / Cancel Bookings
   const handleUpdateBookingStatus = async (bookingId: string, status: Booking['status']) => {
     const previousBooking = bookings.find(b => b.id === bookingId);
     if (!previousBooking) return;
 
-    // Update booking
     const nextBookings = bookings.map(b => b.id === bookingId ? { ...b, status } : b);
     saveState('glance_bookings', nextBookings, setBookings);
 
     let nextPayments = [...payments];
     let nextPackages = [...packages];
 
-    // Orchestration on Completion
     if (status === 'completed') {
-      // Find the corresponding due bill and mark it fully paid!
       nextPayments = payments.map(p => {
         if (p.linkedBookingId === bookingId) {
           return { ...p, status: 'paid' as const };
@@ -1866,9 +1131,7 @@ export default function App() {
       saveState('glance_payments', nextPayments, setPayments);
     }
 
-    // Orchestration on Cancellation
     if (status === 'cancelled') {
-      // 1. If it used a package session, refund it back!
       if (previousBooking.linkedPackageId) {
         nextPackages = packages.map(p => {
           if (p.id === previousBooking.linkedPackageId) {
@@ -1882,7 +1145,6 @@ export default function App() {
         saveState('glance_packages', nextPackages, setPackages);
       }
 
-      // 2. Remove or void corresponding payment ledger log
       nextPayments = payments.filter(p => p.linkedBookingId !== bookingId);
       saveState('glance_payments', nextPayments, setPayments);
     }
@@ -1894,106 +1156,11 @@ export default function App() {
       type: status === 'completed' ? 'booking_completed' : status === 'cancelled' ? 'booking_cancelled' : 'booking_status_updated'
     });
 
-    // If logged in, automatically save/sync with the database!
-    if (user) {
-      setIsSyncing(true);
-      setSyncError(null);
-      setSyncSuccess(false);
-
-      try {
-        const client = getSupabase();
-        const { data: sessionData } = await (client?.auth.getSession() || Promise.resolve({ data: { session: null } }));
-        const token = sessionData?.session?.access_token || '';
-
-        const res = await fetch('/api/supabase/sync', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': token ? `Bearer ${token}` : ''
-          },
-          body: JSON.stringify({
-            userId: user.id,
-            activeBusinessId,
-            businesses,
-            staff,
-            clients,
-            packages: nextPackages,
-            bookings: nextBookings,
-            payments: nextPayments
-          })
-        });
-
-        const result = await safeParseResponse(res);
-        if (!res.ok) {
-          throw new Error(result.error || 'Auto-sync failed on updating booking status.');
-        }
-
-        if (result.success && result.data) {
-          const { data } = result;
-          
-          let targetBizId = activeBusinessId;
-          if (activeBusinessId === 'biz-1' && user) {
-            const mappedId = `biz-1-${user.id}`;
-            const hasMappedBiz = data.businesses?.some((b: any) => b.id === mappedId);
-            if (hasMappedBiz) {
-              targetBizId = mappedId;
-              setActiveBusinessId(mappedId);
-              localStorage.setItem('glance_active_business_id', mappedId);
-            }
-          }
-
-          if (data.businesses?.length > 0) {
-            setBusinesses(data.businesses);
-            localStorage.setItem('glance_businesses', JSON.stringify(data.businesses));
-          }
-
-          // Filter and set for active business
-          const filteredStaff = (data.staff || []).filter((s: any) => s.businessId === targetBizId);
-          setStaff(filteredStaff);
-          localStorage.setItem(`glance_staff_${targetBizId}`, JSON.stringify(filteredStaff));
-
-          const filteredClients = (data.clients || []).filter((c: any) => c.businessId === targetBizId);
-          setClients(filteredClients);
-          localStorage.setItem(`glance_clients_${targetBizId}`, JSON.stringify(filteredClients));
-
-          const filteredPkgs = (data.packages || []).filter((p: any) => p.businessId === targetBizId);
-          setPackages(filteredPkgs);
-          localStorage.setItem(`glance_packages_${targetBizId}`, JSON.stringify(filteredPkgs));
-
-          const filteredBookings = (data.bookings || []).filter((b: any) => b.businessId === targetBizId);
-          setBookings(filteredBookings);
-          localStorage.setItem(`glance_bookings_${targetBizId}`, JSON.stringify(filteredBookings));
-
-          const filteredPayments = (data.payments || []).filter((p: any) => p.businessId === targetBizId);
-          setPayments(filteredPayments);
-          localStorage.setItem(`glance_payments_${targetBizId}`, JSON.stringify(filteredPayments));
-
-          // Group and save the rest of the businesses in localStorage
-          data.businesses.forEach((b: any) => {
-            if (b.id === targetBizId) return;
-            const bStaff = (data.staff || []).filter((s: any) => s.businessId === b.id);
-            const bClients = (data.clients || []).filter((c: any) => c.businessId === b.id);
-            const bPkgs = (data.packages || []).filter((p: any) => p.businessId === b.id);
-            const bBookings = (data.bookings || []).filter((bk: any) => bk.businessId === b.id);
-            const bPayments = (data.payments || []).filter((p: any) => p.businessId === b.id);
-
-            localStorage.setItem(`glance_staff_${b.id}`, JSON.stringify(bStaff));
-            localStorage.setItem(`glance_clients_${b.id}`, JSON.stringify(bClients));
-            localStorage.setItem(`glance_packages_${b.id}`, JSON.stringify(bPkgs));
-            localStorage.setItem(`glance_bookings_${b.id}`, JSON.stringify(bBookings));
-            localStorage.setItem(`glance_payments_${b.id}`, JSON.stringify(bPayments));
-          });
-
-          setSyncSuccess(true);
-          setTimeout(() => setSyncSuccess(false), 4000);
-        }
-      } catch (err: any) {
-        console.error('Auto-sync failed on updating booking status:', err);
-        setSyncError(err.message || 'Auto-synchronization failed on updating booking status.');
-      } finally {
-        setIsSyncing(false);
-      }
-    }
+    await handleDatabaseAutoSync({
+      packages: nextPackages,
+      bookings: nextBookings,
+      payments: nextPayments
+    }, 'updating booking status');
   };
 
   // 6. Delete Bookings
@@ -2001,7 +1168,6 @@ export default function App() {
     const target = bookings.find(b => b.id === bookingId);
     if (!target) return;
 
-    // Save previous state elements so they can be fully restored on undo
     const associatedPayments = payments.filter(p => p.linkedBookingId === bookingId);
     const affectedPackages = target.linkedPackageId ? packages.filter(p => p.id === target.linkedPackageId) : [];
     
@@ -2012,7 +1178,6 @@ export default function App() {
     });
 
     let nextPackages = [...packages];
-    // Refund package balance if active
     if (target.linkedPackageId && target.status !== 'cancelled') {
       nextPackages = packages.map(p => {
         if (p.id === target.linkedPackageId) {
@@ -2039,113 +1204,22 @@ export default function App() {
       type: 'booking_deleted'
     });
 
-    // If logged in, automatically save/sync with the database!
     if (user) {
-      setIsSyncing(true);
-      setSyncError(null);
-      setSyncSuccess(false);
-
-      try {
-        const client = getSupabase();
-        
-        // Delete the booking row from the database first
-        if (client) {
+      const client = getSupabase();
+      if (client) {
+        try {
           await client.from('bookings').delete().eq('id', bookingId).eq('user_id', user.id);
-          // Also delete associated payment
           await client.from('payments').delete().eq('linked_booking_id', bookingId).eq('user_id', user.id);
+        } catch (e) {
+          console.warn('Direct booking delete warning:', e);
         }
-
-        const { data: sessionData } = await (client?.auth.getSession() || Promise.resolve({ data: { session: null } }));
-        const token = sessionData?.session?.access_token || '';
-
-        const res = await fetch('/api/supabase/sync', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': token ? `Bearer ${token}` : ''
-          },
-          body: JSON.stringify({
-            userId: user.id,
-            activeBusinessId,
-            businesses,
-            staff,
-            clients,
-            packages: nextPackages,
-            bookings: nextBookings,
-            payments: nextPayments
-          })
-        });
-
-        const result = await safeParseResponse(res);
-        if (!res.ok) {
-          throw new Error(result.error || 'Auto-sync failed on deleting booking.');
-        }
-
-        if (result.success && result.data) {
-          const { data } = result;
-          
-          let targetBizId = activeBusinessId;
-          if (activeBusinessId === 'biz-1' && user) {
-            const mappedId = `biz-1-${user.id}`;
-            const hasMappedBiz = data.businesses?.some((b: any) => b.id === mappedId);
-            if (hasMappedBiz) {
-              targetBizId = mappedId;
-              setActiveBusinessId(mappedId);
-              localStorage.setItem('glance_active_business_id', mappedId);
-            }
-          }
-
-          if (data.businesses?.length > 0) {
-            setBusinesses(data.businesses);
-            localStorage.setItem('glance_businesses', JSON.stringify(data.businesses));
-          }
-
-          // Filter and set for active business
-          const filteredStaff = (data.staff || []).filter((s: any) => s.businessId === targetBizId);
-          setStaff(filteredStaff);
-          localStorage.setItem(`glance_staff_${targetBizId}`, JSON.stringify(filteredStaff));
-
-          const filteredClients = (data.clients || []).filter((c: any) => c.businessId === targetBizId);
-          setClients(filteredClients);
-          localStorage.setItem(`glance_clients_${targetBizId}`, JSON.stringify(filteredClients));
-
-          const filteredPkgs = (data.packages || []).filter((p: any) => p.businessId === targetBizId);
-          setPackages(filteredPkgs);
-          localStorage.setItem(`glance_packages_${targetBizId}`, JSON.stringify(filteredPkgs));
-
-          const filteredBookings = (data.bookings || []).filter((b: any) => b.businessId === targetBizId);
-          setBookings(filteredBookings);
-          localStorage.setItem(`glance_bookings_${targetBizId}`, JSON.stringify(filteredBookings));
-
-          const filteredPayments = (data.payments || []).filter((p: any) => p.businessId === targetBizId);
-          setPayments(filteredPayments);
-          localStorage.setItem(`glance_payments_${targetBizId}`, JSON.stringify(filteredPayments));
-
-          // Group and save the rest of the businesses in localStorage
-          data.businesses.forEach((b: any) => {
-            if (b.id === targetBizId) return;
-            const bStaff = (data.staff || []).filter((s: any) => s.businessId === b.id);
-            const bClients = (data.clients || []).filter((c: any) => c.businessId === b.id);
-            const bPkgs = (data.packages || []).filter((p: any) => p.businessId === b.id);
-            const bBookings = (data.bookings || []).filter((bk: any) => bk.businessId === b.id);
-            const bPayments = (data.payments || []).filter((p: any) => p.businessId === b.id);
-
-            localStorage.setItem(`glance_staff_${b.id}`, JSON.stringify(bStaff));
-            localStorage.setItem(`glance_clients_${b.id}`, JSON.stringify(bClients));
-            localStorage.setItem(`glance_packages_${b.id}`, JSON.stringify(bPkgs));
-            localStorage.setItem(`glance_bookings_${b.id}`, JSON.stringify(bBookings));
-            localStorage.setItem(`glance_payments_${b.id}`, JSON.stringify(bPayments));
-          });
-
-          setSyncSuccess(true);
-          setTimeout(() => setSyncSuccess(false), 4000);
-        }
-      } catch (err: any) {
-        console.error('Auto-sync failed on deleting booking:', err);
-        setSyncError(err.message || 'Auto-synchronization failed on deleting booking.');
-      } finally {
-        setIsSyncing(false);
       }
+
+      await handleDatabaseAutoSync({
+        packages: nextPackages,
+        bookings: nextBookings,
+        payments: nextPayments
+      }, 'deleting booking');
     }
   };
 
@@ -2173,109 +1247,20 @@ export default function App() {
     });
 
     if (user) {
-      setIsSyncing(true);
-      setSyncError(null);
-      setSyncSuccess(false);
-
-      try {
-        const client = getSupabase();
-        
-        // Update booking in DB
-        if (client) {
+      const client = getSupabase();
+      if (client) {
+        try {
           await client.from('bookings').update({ staff_id: staffId, date_time: dateTime }).eq('id', bookingId).eq('user_id', user.id);
-          // Also update associated payment date in DB
           await client.from('payments').update({ date: dateTime.split('T')[0] }).eq('linked_booking_id', bookingId).eq('user_id', user.id);
+        } catch (e) {
+          console.warn('Direct booking reschedule warning:', e);
         }
-
-        const { data: sessionData } = await (client?.auth.getSession() || Promise.resolve({ data: { session: null } }));
-        const token = sessionData?.session?.access_token || '';
-
-        const res = await fetch('/api/supabase/sync', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': token ? `Bearer ${token}` : ''
-          },
-          body: JSON.stringify({
-            userId: user.id,
-            activeBusinessId,
-            businesses,
-            staff,
-            clients,
-            packages,
-            bookings: nextBookings,
-            payments: nextPayments
-          })
-        });
-
-        const result = await safeParseResponse(res);
-        if (!res.ok) {
-          throw new Error(result.error || 'Auto-sync failed on rescheduling booking.');
-        }
-
-        if (result.success && result.data) {
-          const { data } = result;
-          
-          let targetBizId = activeBusinessId;
-          if (activeBusinessId === 'biz-1' && user) {
-            const mappedId = `biz-1-${user.id}`;
-            const hasMappedBiz = data.businesses?.some((b: any) => b.id === mappedId);
-            if (hasMappedBiz) {
-              targetBizId = mappedId;
-              setActiveBusinessId(mappedId);
-              localStorage.setItem('glance_active_business_id', mappedId);
-            }
-          }
-
-          if (data.businesses?.length > 0) {
-            setBusinesses(data.businesses);
-            localStorage.setItem('glance_businesses', JSON.stringify(data.businesses));
-          }
-
-          const filteredStaff = (data.staff || []).filter((s: any) => s.businessId === targetBizId);
-          setStaff(filteredStaff);
-          localStorage.setItem(`glance_staff_${targetBizId}`, JSON.stringify(filteredStaff));
-
-          const filteredClients = (data.clients || []).filter((c: any) => c.businessId === targetBizId);
-          setClients(filteredClients);
-          localStorage.setItem(`glance_clients_${targetBizId}`, JSON.stringify(filteredClients));
-
-          const filteredPkgs = (data.packages || []).filter((p: any) => p.businessId === targetBizId);
-          setPackages(filteredPkgs);
-          localStorage.setItem(`glance_packages_${targetBizId}`, JSON.stringify(filteredPkgs));
-
-          const filteredBookings = (data.bookings || []).filter((b: any) => b.businessId === targetBizId);
-          setBookings(filteredBookings);
-          localStorage.setItem(`glance_bookings_${targetBizId}`, JSON.stringify(filteredBookings));
-
-          const filteredPayments = (data.payments || []).filter((p: any) => p.businessId === targetBizId);
-          setPayments(filteredPayments);
-          localStorage.setItem(`glance_payments_${targetBizId}`, JSON.stringify(filteredPayments));
-
-          data.businesses.forEach((b: any) => {
-            if (b.id === targetBizId) return;
-            const bStaff = (data.staff || []).filter((s: any) => s.businessId === b.id);
-            const bClients = (data.clients || []).filter((c: any) => c.businessId === b.id);
-            const bPkgs = (data.packages || []).filter((p: any) => p.businessId === b.id);
-            const bBookings = (data.bookings || []).filter((bk: any) => bk.businessId === b.id);
-            const bPayments = (data.payments || []).filter((p: any) => p.businessId === b.id);
-
-            localStorage.setItem(`glance_staff_${b.id}`, JSON.stringify(bStaff));
-            localStorage.setItem(`glance_clients_${b.id}`, JSON.stringify(bClients));
-            localStorage.setItem(`glance_packages_${b.id}`, JSON.stringify(bPkgs));
-            localStorage.setItem(`glance_bookings_${b.id}`, JSON.stringify(bBookings));
-            localStorage.setItem(`glance_payments_${b.id}`, JSON.stringify(bPayments));
-          });
-
-          setSyncSuccess(true);
-          setTimeout(() => setSyncSuccess(false), 4000);
-        }
-      } catch (err: any) {
-        console.error('Auto-sync failed on rescheduling booking:', err);
-        setSyncError(err.message || 'Auto-synchronization failed on rescheduling booking.');
-      } finally {
-        setIsSyncing(false);
       }
+
+      await handleDatabaseAutoSync({
+        bookings: nextBookings,
+        payments: nextPayments
+      }, 'rescheduling booking');
     }
   };
 
@@ -2284,22 +1269,18 @@ export default function App() {
     if (!lastDeletedBooking) return;
     const { booking, payments: deletedPayments, packages: deletedPackages } = lastDeletedBooking;
 
-    // Restore booking
     const nextBookings = [...bookings, booking];
     saveState('glance_bookings', nextBookings, setBookings);
 
-    // Restore payments
     const nextPayments = [...payments, ...deletedPayments];
     saveState('glance_payments', nextPayments, setPayments);
 
-    // Restore packages
     const nextPackages = packages.map(p => {
       const deletedP = deletedPackages.find(dp => dp.id === p.id);
       return deletedP ? deletedP : p;
     });
     saveState('glance_packages', nextPackages, setPackages);
 
-    // Clear lastDeletedBooking state so the toast closes
     setLastDeletedBooking(null);
 
     sendSyncUpdate(nextPayments, nextBookings, clients, nextPackages, {
@@ -2309,106 +1290,11 @@ export default function App() {
       type: 'booking_restored'
     });
 
-    // If logged in, automatically save/sync with the database!
-    if (user) {
-      setIsSyncing(true);
-      setSyncError(null);
-      setSyncSuccess(false);
-
-      try {
-        const client = getSupabase();
-        const { data: sessionData } = await (client?.auth.getSession() || Promise.resolve({ data: { session: null } }));
-        const token = sessionData?.session?.access_token || '';
-
-        const res = await fetch('/api/supabase/sync', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': token ? `Bearer ${token}` : ''
-          },
-          body: JSON.stringify({
-            userId: user.id,
-            activeBusinessId,
-            businesses,
-            staff,
-            clients,
-            packages: nextPackages,
-            bookings: nextBookings,
-            payments: nextPayments
-          })
-        });
-
-        const result = await safeParseResponse(res);
-        if (!res.ok) {
-          throw new Error(result.error || 'Auto-sync failed on restoring booking.');
-        }
-
-        if (result.success && result.data) {
-          const { data } = result;
-          
-          let targetBizId = activeBusinessId;
-          if (activeBusinessId === 'biz-1' && user) {
-            const mappedId = `biz-1-${user.id}`;
-            const hasMappedBiz = data.businesses?.some((b: any) => b.id === mappedId);
-            if (hasMappedBiz) {
-              targetBizId = mappedId;
-              setActiveBusinessId(mappedId);
-              localStorage.setItem('glance_active_business_id', mappedId);
-            }
-          }
-
-          if (data.businesses?.length > 0) {
-            setBusinesses(data.businesses);
-            localStorage.setItem('glance_businesses', JSON.stringify(data.businesses));
-          }
-
-          // Filter and set for active business
-          const filteredStaff = (data.staff || []).filter((s: any) => s.businessId === targetBizId);
-          setStaff(filteredStaff);
-          localStorage.setItem(`glance_staff_${targetBizId}`, JSON.stringify(filteredStaff));
-
-          const filteredClients = (data.clients || []).filter((c: any) => c.businessId === targetBizId);
-          setClients(filteredClients);
-          localStorage.setItem(`glance_clients_${targetBizId}`, JSON.stringify(filteredClients));
-
-          const filteredPkgs = (data.packages || []).filter((p: any) => p.businessId === targetBizId);
-          setPackages(filteredPkgs);
-          localStorage.setItem(`glance_packages_${targetBizId}`, JSON.stringify(filteredPkgs));
-
-          const filteredBookings = (data.bookings || []).filter((b: any) => b.businessId === targetBizId);
-          setBookings(filteredBookings);
-          localStorage.setItem(`glance_bookings_${targetBizId}`, JSON.stringify(filteredBookings));
-
-          const filteredPayments = (data.payments || []).filter((p: any) => p.businessId === targetBizId);
-          setPayments(filteredPayments);
-          localStorage.setItem(`glance_payments_${targetBizId}`, JSON.stringify(filteredPayments));
-
-          // Group and save the rest of the businesses in localStorage
-          data.businesses.forEach((b: any) => {
-            if (b.id === targetBizId) return;
-            const bStaff = (data.staff || []).filter((s: any) => s.businessId === b.id);
-            const bClients = (data.clients || []).filter((c: any) => c.businessId === b.id);
-            const bPkgs = (data.packages || []).filter((p: any) => p.businessId === b.id);
-            const bBookings = (data.bookings || []).filter((bk: any) => bk.businessId === b.id);
-            const bPayments = (data.payments || []).filter((p: any) => p.businessId === b.id);
-
-            localStorage.setItem(`glance_staff_${b.id}`, JSON.stringify(bStaff));
-            localStorage.setItem(`glance_clients_${b.id}`, JSON.stringify(bClients));
-            localStorage.setItem(`glance_packages_${b.id}`, JSON.stringify(bPkgs));
-            localStorage.setItem(`glance_bookings_${b.id}`, JSON.stringify(bBookings));
-            localStorage.setItem(`glance_payments_${b.id}`, JSON.stringify(bPayments));
-          });
-
-          setSyncSuccess(true);
-          setTimeout(() => setSyncSuccess(false), 4000);
-        }
-      } catch (err: any) {
-        console.error('Auto-sync failed on restoring booking:', err);
-        setSyncError(err.message || 'Auto-synchronization failed on restoring booking.');
-      } finally {
-        setIsSyncing(false);
-      }
-    }
+    await handleDatabaseAutoSync({
+      packages: nextPackages,
+      bookings: nextBookings,
+      payments: nextPayments
+    }, 'restoring booking');
   };
 
   // 7. Sell package with upfront payment register
@@ -2422,7 +1308,6 @@ export default function App() {
     };
 
     let nextClients = [...clients];
-    // Check & Add client if not in directory
     const clientExists = clients.some(c => c.phone === pkg.clientPhone);
     if (!clientExists) {
       const newClient: Client = {
@@ -2440,7 +1325,6 @@ export default function App() {
     const nextPackages = [...packages, freshPkg];
     saveState('glance_packages', nextPackages, setPackages);
 
-    // Create Payment log for upfront collection
     const paymentId = `pay-${Date.now()}`;
     const freshPayment: Payment = {
       id: paymentId,
@@ -2451,7 +1335,7 @@ export default function App() {
       date: new Date().toISOString().split('T')[0],
       type: 'package_purchase',
       linkedPackageId: pkgId,
-      status: 'paid', // Prepaid upfront
+      status: 'paid',
       businessId: activeBusinessId
     };
     const nextPayments = [...payments, freshPayment];
@@ -2464,111 +1348,11 @@ export default function App() {
       type: 'package_purchase'
     });
 
-    // If logged in, automatically save/sync with the database!
-    if (user) {
-      setIsSyncing(true);
-      setSyncError(null);
-      setSyncSuccess(false);
-
-      try {
-        const client = getSupabase();
-        const { data: sessionData } = await (client?.auth.getSession() || Promise.resolve({ data: { session: null } }));
-        const token = sessionData?.session?.access_token || '';
-
-        const res = await fetch('/api/supabase/sync', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': token ? `Bearer ${token}` : ''
-          },
-          body: JSON.stringify({
-            userId: user.id,
-            activeBusinessId,
-            businesses,
-            staff,
-            clients: nextClients,
-            packages: nextPackages,
-            bookings,
-            payments: nextPayments
-          })
-        });
-
-        const result = await safeParseResponse(res);
-        if (!res.ok) {
-          throw new Error(result.error || 'Auto-sync failed on selling package.');
-        }
-
-        if (result.success && result.data) {
-          const { data } = result;
-          
-          let targetBizId = activeBusinessId;
-          if (activeBusinessId === 'biz-1' && user) {
-            const mappedId = `biz-1-${user.id}`;
-            const hasMappedBiz = data.businesses?.some((b: any) => b.id === mappedId);
-            if (hasMappedBiz) {
-              targetBizId = mappedId;
-              setActiveBusinessId(mappedId);
-              localStorage.setItem('glance_active_business_id', mappedId);
-            }
-          }
-
-          if (data.businesses?.length > 0) {
-            setBusinesses(data.businesses);
-            localStorage.setItem('glance_businesses', JSON.stringify(data.businesses));
-          }
-
-          // Filter and set for active business
-          const filteredStaff = (data.staff || []).filter((s: any) => s.businessId === targetBizId);
-          setStaff(filteredStaff);
-          localStorage.setItem(`glance_staff_${targetBizId}`, JSON.stringify(filteredStaff));
-
-          const filteredClients = (data.clients || []).filter((c: any) => c.businessId === targetBizId);
-          setClients(filteredClients);
-          localStorage.setItem(`glance_clients_${targetBizId}`, JSON.stringify(filteredClients));
-
-          const filteredPkgs = (data.packages || []).filter((p: any) => p.businessId === targetBizId);
-          setPackages(filteredPkgs);
-          localStorage.setItem(`glance_packages_${targetBizId}`, JSON.stringify(filteredPkgs));
-
-          const filteredBookings = (data.bookings || []).filter((b: any) => b.businessId === targetBizId);
-          setBookings(filteredBookings);
-          localStorage.setItem(`glance_bookings_${targetBizId}`, JSON.stringify(filteredBookings));
-
-          const filteredPayments = (data.payments || []).filter((p: any) => p.businessId === targetBizId);
-          setPayments(filteredPayments);
-          localStorage.setItem(`glance_payments_${targetBizId}`, JSON.stringify(filteredPayments));
-
-          // Group and save the rest of the businesses in localStorage
-          data.businesses.forEach((b: any) => {
-            if (b.id === targetBizId) return;
-            const bStaff = (data.staff || []).filter((s: any) => s.businessId === b.id);
-            const bClients = (data.clients || []).filter((c: any) => c.businessId === b.id);
-            const bPkgs = (data.packages || []).filter((p: any) => p.businessId === b.id);
-            const bBookings = (data.bookings || []).filter((bk: any) => bk.businessId === b.id);
-            const bPayments = (data.payments || []).filter((p: any) => p.businessId === b.id);
-
-            localStorage.setItem(`glance_staff_${b.id}`, JSON.stringify(bStaff));
-            localStorage.setItem(`glance_clients_${b.id}`, JSON.stringify(bClients));
-            localStorage.setItem(`glance_packages_${b.id}`, JSON.stringify(bPkgs));
-            localStorage.setItem(`glance_bookings_${b.id}`, JSON.stringify(bBookings));
-            localStorage.setItem(`glance_payments_${b.id}`, JSON.stringify(bPayments));
-          });
-
-          setSyncSuccess(true);
-          setTimeout(() => setSyncSuccess(false), 4000);
-        }
-      } catch (err: any) {
-        console.error('Auto-sync failed on selling package:', err);
-        setSyncError(err.message || 'Auto-synchronization failed on selling package.');
-      } finally {
-        setIsSyncing(false);
-      }
-    }
-  };
-
-  const formClientNameFallback = (phone: string) => {
-    const found = clients.find(c => c.phone === phone);
-    return found ? found.name : `Client (${phone})`;
+    await handleDatabaseAutoSync({
+      clients: nextClients,
+      packages: nextPackages,
+      payments: nextPayments
+    }, 'selling package');
   };
 
   // 8. Settle Dues
