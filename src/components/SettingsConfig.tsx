@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Business, Staff, BusinessType, Service, getBusinessEmoji } from '../types';
+import SupabaseDiagnostic from './SupabaseDiagnostic';
 import { 
   Building, 
   Users, 
@@ -191,6 +192,7 @@ export default function SettingsConfig({
   const [bPhone, setBPhone] = useState(business.phone);
   const [bUpi, setBUpi] = useState(business.upiId || '');
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [showDiagnosticModal, setShowDiagnosticModal] = useState(false);
 
   // Sync inputs with currently selected active business
   React.useEffect(() => {
@@ -987,6 +989,17 @@ export default function SettingsConfig({
           Synchronize your local booking calendar, staff settings, clients, and payment ledger records with your cloud Supabase PostgreSQL database. This allows secure real-time multi-device collaboration.
         </p>
 
+        <div className="pt-1">
+          <button
+            type="button"
+            onClick={() => setShowDiagnosticModal(true)}
+            className="w-full inline-flex items-center justify-center gap-2 bg-slate-900 hover:bg-slate-800 text-indigo-300 text-xs font-bold py-2 px-3 rounded-xl transition-colors cursor-pointer"
+          >
+            <Database className="h-4 w-4 text-indigo-400" />
+            <span>Open Connection Diagnostic Tool & Vercel Setup</span>
+          </button>
+        </div>
+
         {supabaseStatus.configured ? (
           <div className="space-y-3">
             <div className="flex items-center justify-between p-3 bg-emerald-50/50 border border-emerald-100 rounded-xl text-xs">
@@ -1596,6 +1609,15 @@ CREATE POLICY "Allow write own data" ON public.services FOR ALL USING (auth.uid(
                 Confirm
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Diagnostic Modal */}
+      {showDiagnosticModal && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto animate-fade-in">
+          <div className="relative w-full max-w-2xl my-8">
+            <SupabaseDiagnostic onClose={() => setShowDiagnosticModal(false)} />
           </div>
         </div>
       )}

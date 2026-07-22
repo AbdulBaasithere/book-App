@@ -23,6 +23,7 @@ import {
   saveLocalSupabaseConfig, 
   clearLocalSupabaseConfig 
 } from '../utils/supabaseClient';
+import SupabaseDiagnostic from './SupabaseDiagnostic';
 
 interface LoginProps {
   onLoginSuccess: (user: any) => void;
@@ -40,6 +41,7 @@ export default function Login({ onLoginSuccess, onBypass }: LoginProps) {
 
   // Supabase connection and local configuration states
   const [isConfigOpen, setIsConfigOpen] = useState(false);
+  const [showDiagnosticModal, setShowDiagnosticModal] = useState(false);
   const [config, setConfig] = useState<{
     configured: boolean;
     url: string | null;
@@ -443,6 +445,17 @@ export default function Login({ onLoginSuccess, onBypass }: LoginProps) {
                     </button>
                   )}
                 </div>
+
+                <div className="pt-2 border-t border-slate-200/60">
+                  <button
+                    type="button"
+                    onClick={() => setShowDiagnosticModal(true)}
+                    className="w-full bg-slate-900 hover:bg-slate-800 text-indigo-300 font-extrabold text-[11px] py-2 rounded-lg transition-colors cursor-pointer flex items-center justify-center gap-1.5"
+                  >
+                    <Settings className="h-3.5 w-3.5 text-indigo-400" />
+                    <span>Run Connection Diagnostic Tool</span>
+                  </button>
+                </div>
               </form>
             )}
           </div>
@@ -451,6 +464,15 @@ export default function Login({ onLoginSuccess, onBypass }: LoginProps) {
         </div>
 
       </div>
+
+      {/* Diagnostic Modal */}
+      {showDiagnosticModal && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto animate-fade-in">
+          <div className="relative w-full max-w-2xl my-8">
+            <SupabaseDiagnostic onClose={() => setShowDiagnosticModal(false)} />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
