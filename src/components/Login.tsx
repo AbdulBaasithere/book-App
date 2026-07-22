@@ -118,9 +118,14 @@ export default function Login({ onLoginSuccess, onBypass }: LoginProps) {
     setSuccessMsg(null);
     setLoading(true);
 
-    const supabase = getSupabase();
+    let supabase = getSupabase();
     if (!supabase) {
-      setError('Supabase client is not initialized. Please configure connection parameters.');
+      supabase = await initSupabase();
+    }
+
+    if (!supabase) {
+      setError('Supabase client is not initialized. Expand "Configure Connection" below to enter your Supabase URL & Key, or set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in Vercel Environment Variables.');
+      setIsConfigOpen(true);
       setLoading(false);
       return;
     }

@@ -472,7 +472,7 @@ Instructions for your responses:
       ];
 
       const response = await ai.models.generateContent({
-        model: "gemini-3.5-flash",
+        model: "gemini-3.6-flash",
         contents: formattedContents,
         config: {
           systemInstruction,
@@ -534,7 +534,7 @@ Instructions for your responses:
       const prompt = `Generate a single short, highly inspiring and actionable 1-sentence motivational quote specifically about earning money daily, growing revenue, and building wealth in ${sector}. Return JSON only with format: {"quote": "...", "author": "..."}`;
       
       const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
+        model: 'gemini-3.6-flash',
         contents: prompt,
         config: {
           responseMimeType: "application/json"
