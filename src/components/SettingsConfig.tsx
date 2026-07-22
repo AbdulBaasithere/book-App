@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Business, Staff, BusinessType, Service } from '../types';
+import { Business, Staff, BusinessType, Service, getBusinessEmoji } from '../types';
 import { 
   Building, 
   Users, 
@@ -56,6 +56,107 @@ const COLOR_PRESETS = [
   "bg-fuchsia-50 text-fuchsia-700 border-fuchsia-200",
   "bg-orange-50 text-orange-700 border-orange-200"
 ];
+
+interface SectorSelectProps {
+  value: string;
+  onChange: (val: string) => void;
+  className?: string;
+}
+
+const PRESET_SECTORS = [
+  { id: 'spa', label: 'Spa & Wellness', emoji: '🌸' },
+  { id: 'salon', label: 'Salon & Hair Studio', emoji: '💇' },
+  { id: 'gym', label: 'Gym & Fitness Center', emoji: '🏋️' },
+  { id: 'clinic', label: 'Clinic & Healthcare', emoji: '🩺' },
+  { id: 'barber', label: 'Barber & Grooming', emoji: '🧔' },
+  { id: 'massage', label: 'Massage & Therapy', emoji: '💆' },
+  { id: 'nail', label: 'Nail Studio', emoji: '💅' },
+  { id: 'yoga', label: 'Yoga & Pilates Studio', emoji: '🧘' },
+  { id: 'petcare', label: 'Pet Care & Grooming', emoji: '🐾' },
+  { id: 'consulting', label: 'Consulting & Coaching', emoji: '💼' },
+  { id: 'education', label: 'Education & Tutoring', emoji: '🎓' },
+  { id: 'photography', label: 'Photography & Studio', emoji: '📷' },
+  { id: 'autodetailing', label: 'Auto Detailing & Care', emoji: '🚗' },
+];
+
+function BusinessSectorSelect({ value, onChange, className }: SectorSelectProps) {
+  const normalizedValue = (value || '').toLowerCase().trim();
+  const matchedPreset = PRESET_SECTORS.find(
+    s => s.id === normalizedValue || s.label.toLowerCase() === normalizedValue
+  );
+
+  const isCustom = !matchedPreset && value !== '';
+  const [selectedOption, setSelectedOption] = useState<string>(
+    matchedPreset ? matchedPreset.id : isCustom ? 'custom' : 'salon'
+  );
+
+  React.useEffect(() => {
+    const norm = (value || '').toLowerCase().trim();
+    const found = PRESET_SECTORS.find(s => s.id === norm || s.label.toLowerCase() === norm);
+    if (found) {
+      setSelectedOption(found.id);
+    } else if (value) {
+      setSelectedOption('custom');
+    }
+  }, [value]);
+
+  const handleSelectChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const opt = e.target.value;
+    setSelectedOption(opt);
+    if (opt !== 'custom') {
+      const preset = PRESET_SECTORS.find(s => s.id === opt);
+      if (preset) {
+        onChange(preset.id);
+      }
+    } else {
+      if (PRESET_SECTORS.some(s => s.id === (value || '').toLowerCase())) {
+        onChange('');
+      }
+    }
+  };
+
+  return (
+    <div className="space-y-1.5">
+      <select
+        value={selectedOption}
+        onChange={handleSelectChange}
+        className={className}
+      >
+        <optgroup label="Popular Business Sectors">
+          <option value="spa">🌸 Spa & Wellness</option>
+          <option value="salon">💇 Salon & Hair Studio</option>
+          <option value="gym">🏋️ Gym & Fitness Center</option>
+          <option value="clinic">🩺 Clinic & Healthcare</option>
+        </optgroup>
+        <optgroup label="More Sectors">
+          <option value="barber">🧔 Barber & Grooming</option>
+          <option value="massage">💆 Massage & Therapy</option>
+          <option value="nail">💅 Nail Studio</option>
+          <option value="yoga">🧘 Yoga & Pilates Studio</option>
+          <option value="petcare">🐾 Pet Care & Grooming</option>
+          <option value="consulting">💼 Consulting & Coaching</option>
+          <option value="education">🎓 Education & Tutoring</option>
+          <option value="photography">📷 Photography & Studio</option>
+          <option value="autodetailing">🚗 Auto Detailing & Care</option>
+        </optgroup>
+        <optgroup label="Custom">
+          <option value="custom">✨ Other / Custom Sector...</option>
+        </optgroup>
+      </select>
+
+      {selectedOption === 'custom' && (
+        <input
+          type="text"
+          placeholder="Type custom business sector name..."
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className={className}
+          required
+        />
+      )}
+    </div>
+  );
+}
 
 export default function SettingsConfig({
   business,
@@ -366,12 +467,10 @@ export default function SettingsConfig({
 
               <div className="space-y-1">
                 <label className="font-semibold text-slate-500">Business Sector</label>
-                <textarea
-                  placeholder="e.g. Salon, Spa, Wellness Centre"
+                <BusinessSectorSelect
                   value={newBizType}
-                  onChange={(e) => setNewBizType(e.target.value)}
-                  className="w-full bg-white border border-slate-200 px-2.5 py-1.5 rounded-lg font-medium focus:outline-indigo-500 min-h-[60px]"
-                  required
+                  onChange={setNewBizType}
+                  className="w-full bg-white border border-slate-200 px-2.5 py-1.5 rounded-lg font-medium focus:outline-indigo-500 text-slate-800"
                 />
               </div>
 
@@ -433,7 +532,7 @@ export default function SettingsConfig({
                       )}
                     </div>
                     <p className="text-[10px] text-slate-500 font-semibold capitalize mt-1">
-                      {b.type === 'salon' ? '💇' : b.type === 'spa' ? '🌸' : b.type === 'clinic' ? '🩺' : '🏋️'} {b.type} • {b.ownerName}
+                      {getBusinessEmoji(b.type)} {b.type} • {b.ownerName}
                     </p>
                     <p className="text-[10px] text-slate-400 font-bold mt-0.5">
                       Phone: +91 {b.phone}
@@ -505,12 +604,10 @@ export default function SettingsConfig({
 
             <div className="space-y-1">
               <label className="text-xs font-semibold text-slate-500">Business Sector</label>
-              <textarea
+              <BusinessSectorSelect
                 value={bType}
-                onChange={(e) => setBType(e.target.value)}
-                className="w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium focus:bg-white focus:outline-indigo-500 min-h-[60px]"
-                placeholder="e.g. Salon, Spa, Wellness Centre"
-                required
+                onChange={setBType}
+                className="w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium focus:bg-white focus:outline-indigo-500 text-slate-800"
               />
             </div>
 
@@ -944,6 +1041,8 @@ export default function SettingsConfig({
               syncError.toLowerCase().includes('table') || 
               syncError.toLowerCase().includes('relation') || 
               syncError.toLowerCase().includes('cache') || 
+              syncError.toLowerCase().includes('constraint') || 
+              syncError.toLowerCase().includes('businesses_type_check') || 
               syncError.toLowerCase().includes('missing')) && (
               <div className="p-4 bg-indigo-50/70 border border-indigo-100 rounded-2xl space-y-3.5">
                 <div className="flex items-center gap-2">
@@ -964,7 +1063,7 @@ export default function SettingsConfig({
 CREATE TABLE IF NOT EXISTS public.businesses (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
-    type TEXT NOT NULL CHECK (type IN ('salon', 'spa', 'clinic', 'gym')),
+    type TEXT NOT NULL,
     owner_name TEXT NOT NULL,
     phone TEXT NOT NULL,
     upi_id TEXT,
@@ -1164,7 +1263,7 @@ CREATE POLICY "Allow write own data" ON public.services FOR ALL USING (auth.uid(
 CREATE TABLE IF NOT EXISTS public.businesses (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
-    type TEXT NOT NULL CHECK (type IN ('salon', 'spa', 'clinic', 'gym')),
+    type TEXT NOT NULL,
     owner_name TEXT NOT NULL,
     phone TEXT NOT NULL,
     upi_id TEXT,

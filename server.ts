@@ -175,8 +175,26 @@ async function startServer() {
                 created_at: b.created_at || new Date().toISOString()
               };
             });
-            const { error: bizErr } = await supabase.from('businesses').upsert(dbBusinesses);
-            if (bizErr) throw new Error(`Businesses upsert error: ${bizErr.message}`);
+            let { error: bizErr } = await supabase.from('businesses').upsert(dbBusinesses);
+            if (bizErr && (
+              bizErr.message?.includes('businesses_type_check') || 
+              bizErr.message?.includes('check constraint') || 
+              bizErr.code === '23514'
+            )) {
+              console.warn('Businesses upsert hit legacy type constraint. Retrying with safe fallback type for Supabase row...');
+              const safeDbBusinesses = dbBusinesses.map((b: any) => {
+                const allowed = ['salon', 'spa', 'clinic', 'gym'];
+                const lowerType = (b.type || '').toLowerCase();
+                const safeType = allowed.includes(lowerType) ? lowerType : 'salon';
+                return { ...b, type: safeType };
+              });
+              const { error: retryErr } = await supabase.from('businesses').upsert(safeDbBusinesses);
+              if (retryErr) {
+                throw new Error(`Businesses upsert error: ${retryErr.message}`);
+              }
+            } else if (bizErr) {
+              throw new Error(`Businesses upsert error: ${bizErr.message}`);
+            }
           }
 
           // 2. Upsert Staff
@@ -493,6 +511,61 @@ Instructions for your responses:
     ws.on('close', () => {
       console.log('Real-time WS client disconnected');
     });
+  });
+
+  // AI Daily Money Earning Quote endpoint
+  app.get("/api/ai/quote", async (req, res) => {
+    const fallbackQuotes = [
+      { quote: "Small daily revenues compounded over time build lasting wealth and business independence.", author: "Daily Wealth AI" },
+      { quote: "Focus on delivering value today, and today's revenue will naturally follow.", author: "Business Mindset AI" },
+      { quote: "Every satisfied customer today is a seed for recurring income tomorrow.", author: "Growth Engine AI" },
+      { quote: "Financial freedom isn't built overnight—it is earned one client, one booking, and one day at a time.", author: "Financial Vision AI" },
+      { quote: "Consistency in service creates consistency in daily revenue.", author: "Hustle Intelligence AI" },
+      { quote: "Track your numbers daily, serve with excellence, and watch your business earnings scale.", author: "Entrepreneur AI" }
+    ];
+
+    if (!process.env.GEMINI_API_KEY) {
+      const randomFallback = fallbackQuotes[Math.floor(Math.random() * fallbackQuotes.length)];
+      return res.json({ success: true, ...randomFallback, generatedBy: "Curated AI Collection" });
+    }
+
+    try {
+      const sector = req.query.sector ? String(req.query.sector) : "business & services";
+      const prompt = `Generate a single short, highly inspiring and actionable 1-sentence motivational quote specifically about earning money daily, growing revenue, and building wealth in ${sector}. Return JSON only with format: {"quote": "...", "author": "..."}`;
+      
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: prompt,
+        config: {
+          responseMimeType: "application/json"
+        }
+      });
+
+      const text = response.text || '';
+      const parsed = JSON.parse(text);
+      if (parsed.quote) {
+        return res.json({ success: true, quote: parsed.quote, author: parsed.author || "Gemini Wealth AI", generatedBy: "Gemini AI" });
+      }
+      throw new Error("Invalid output structure");
+    } catch (err) {
+      console.warn("Gemini quote generation fallback triggered:", err);
+      const randomFallback = fallbackQuotes[Math.floor(Math.random() * fallbackQuotes.length)];
+      return res.json({ success: true, ...randomFallback, generatedBy: "Curated AI Collection" });
+    }
+  });
+
+  // Fallback 404 for unhandled API routes so Vite doesn't serve index.html for missing /api endpoints
+  app.use("/api/*", (req, res) => {
+    res.status(404).json({ error: `API route ${req.originalUrl} not found.` });
+  });
+
+  // Global error handler for API routes
+  app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (req.path.startsWith('/api')) {
+      console.error("API Route Error:", err);
+      return res.status(err.status || 500).json({ error: err.message || "An internal server error occurred." });
+    }
+    next(err);
   });
 
   // Vite middleware for development or serving built static files in production

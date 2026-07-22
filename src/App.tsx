@@ -25,6 +25,22 @@ const fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Resp
   }
   return originalFetch(input, init);
 };
+
+async function safeParseResponse(res: Response): Promise<any> {
+  const contentType = res.headers.get('content-type') || '';
+  const text = await res.text();
+  if (contentType.includes('application/json') || (text && (text.trim().startsWith('{') || text.trim().startsWith('[')))) {
+    try {
+      return JSON.parse(text);
+    } catch (e) {
+      // Fall through to error
+    }
+  }
+  if (!res.ok) {
+    throw new Error(`Server returned HTTP ${res.status}: ${res.statusText || 'Database sync service unavailable.'}`);
+  }
+  throw new Error('Server returned non-JSON response.');
+}
 import { 
   DEFAULT_BUSINESS, 
   DEFAULT_STAFF, 
@@ -35,7 +51,7 @@ import {
   DEFAULT_SERVICES,
   DEFAULT_LIVE_FEED
 } from './initialData';
-import { Business, Staff, Client, Package, Booking, Payment, Service } from './types';
+import { Business, Staff, Client, Package, Booking, Payment, Service, getBusinessEmoji } from './types';
 
 // Import Views
 import Dashboard from './components/Dashboard';
@@ -144,7 +160,7 @@ export default function App() {
     async function fetchStatus() {
       try {
         const res = await fetch('/api/supabase/status');
-        const data = await res.json();
+        const data = await safeParseResponse(res);
         setSupabaseStatus(data);
       } catch (e) {
         console.error('Failed to fetch Supabase status', e);
@@ -226,7 +242,7 @@ export default function App() {
         })
       });
 
-      const result = await res.json();
+      const result = await safeParseResponse(res);
       if (!res.ok) {
         throw new Error(result.error || 'Synchronization failed.');
       }
@@ -369,7 +385,7 @@ export default function App() {
           })
         });
 
-        const result = await res.json();
+        const result = await safeParseResponse(res);
         if (!res.ok) throw new Error(result.error || 'Failed to retrieve cloud database records.');
 
         if (isMounted && result.success && result.data) {
@@ -826,7 +842,7 @@ export default function App() {
           })
         });
 
-        const result = await res.json();
+        const result = await safeParseResponse(res);
         if (!res.ok) {
           throw new Error(result.error || 'Auto-sync failed on business profile update.');
         }
@@ -937,7 +953,7 @@ export default function App() {
           })
         });
 
-        const result = await res.json();
+        const result = await safeParseResponse(res);
         if (!res.ok) {
           throw new Error(result.error || 'Auto-sync failed on adding service.');
         }
@@ -998,7 +1014,7 @@ export default function App() {
           })
         });
 
-        const result = await res.json();
+        const result = await safeParseResponse(res);
         if (!res.ok) {
           throw new Error(result.error || 'Auto-sync failed on updating service.');
         }
@@ -1054,7 +1070,7 @@ export default function App() {
           })
         });
 
-        const result = await res.json();
+        const result = await safeParseResponse(res);
         if (!res.ok) {
           throw new Error(result.error || 'Auto-sync failed on deleting service.');
         }
@@ -1160,7 +1176,7 @@ export default function App() {
           })
         });
 
-        const result = await res.json();
+        const result = await safeParseResponse(res);
         if (!res.ok) {
           throw new Error(result.error || 'Auto-sync failed on adding staff.');
         }
@@ -1273,7 +1289,7 @@ export default function App() {
           })
         });
 
-        const result = await res.json();
+        const result = await safeParseResponse(res);
         if (!res.ok) {
           throw new Error(result.error || 'Auto-sync failed on deleting staff.');
         }
@@ -1386,7 +1402,7 @@ export default function App() {
           })
         });
 
-        const result = await res.json();
+        const result = await safeParseResponse(res);
         if (!res.ok) {
           throw new Error(result.error || 'Auto-sync failed on adding client.');
         }
@@ -1492,7 +1508,7 @@ export default function App() {
           })
         });
 
-        const result = await res.json();
+        const result = await safeParseResponse(res);
         if (!res.ok) {
           throw new Error(result.error || 'Auto-sync failed on updating client notes.');
         }
@@ -1622,7 +1638,7 @@ export default function App() {
           })
         });
 
-        const result = await res.json();
+        const result = await safeParseResponse(res);
         if (!res.ok) {
           throw new Error(result.error || 'Auto-sync failed on updating client.');
         }
@@ -1790,7 +1806,7 @@ export default function App() {
           })
         });
 
-        const result = await res.json();
+        const result = await safeParseResponse(res);
         if (!res.ok) {
           throw new Error(result.error || 'Auto-sync failed on creating booking.');
         }
@@ -1944,7 +1960,7 @@ export default function App() {
           })
         });
 
-        const result = await res.json();
+        const result = await safeParseResponse(res);
         if (!res.ok) {
           throw new Error(result.error || 'Auto-sync failed on updating booking status.');
         }
@@ -2097,7 +2113,7 @@ export default function App() {
           })
         });
 
-        const result = await res.json();
+        const result = await safeParseResponse(res);
         if (!res.ok) {
           throw new Error(result.error || 'Auto-sync failed on deleting booking.');
         }
@@ -2229,7 +2245,7 @@ export default function App() {
           })
         });
 
-        const result = await res.json();
+        const result = await safeParseResponse(res);
         if (!res.ok) {
           throw new Error(result.error || 'Auto-sync failed on rescheduling booking.');
         }
@@ -2359,7 +2375,7 @@ export default function App() {
           })
         });
 
-        const result = await res.json();
+        const result = await safeParseResponse(res);
         if (!res.ok) {
           throw new Error(result.error || 'Auto-sync failed on restoring booking.');
         }
@@ -2514,7 +2530,7 @@ export default function App() {
           })
         });
 
-        const result = await res.json();
+        const result = await safeParseResponse(res);
         if (!res.ok) {
           throw new Error(result.error || 'Auto-sync failed on selling package.');
         }
@@ -2859,7 +2875,7 @@ export default function App() {
       <div className="min-h-screen bg-[#fafaf9] flex flex-col items-center justify-center p-4">
         <div className="flex flex-col items-center space-y-4">
           <img 
-            src="/src/assets/images/booking_setter_logo_1784639936453.jpg" 
+            src="/src/assets/images/book_app_logo_1784702268672.jpg" 
             alt="Book App Logo" 
             className="h-20 w-20 rounded-3xl object-cover shadow-xl shadow-indigo-150/10 border border-slate-200/40 animate-pulse"
             referrerPolicy="no-referrer"
@@ -2897,7 +2913,7 @@ export default function App() {
           {/* Main App Logo Header */}
           <div className="flex items-center gap-3 px-1.5 py-1">
             <img 
-              src="/src/assets/images/booking_setter_logo_1784639936453.jpg" 
+              src="/src/assets/images/book_app_logo_1784702268672.jpg" 
               alt="Book App Logo" 
               className="h-10 w-10 rounded-xl object-cover shadow-sm border border-slate-200/40"
               referrerPolicy="no-referrer"
@@ -2956,7 +2972,7 @@ export default function App() {
                     <div className="min-w-0">
                       <p className="font-extrabold truncate max-w-[150px]">{b.name}</p>
                       <p className="text-[9px] text-slate-400 capitalize font-semibold mt-0.5">
-                        {b.type === 'salon' ? '💇' : b.type === 'spa' ? '🌸' : b.type === 'clinic' ? '🩺' : '🏋️'} {b.type}
+                        {getBusinessEmoji(b.type)} {b.type}
                       </p>
                     </div>
                     {b.id === activeBusinessId && (
@@ -3219,7 +3235,7 @@ export default function App() {
                   <div className="min-w-0">
                     <p className="font-bold truncate max-w-[140px]">{b.name}</p>
                     <p className="text-[9px] text-slate-400 capitalize font-medium">
-                      {b.type === 'salon' ? '💇' : b.type === 'spa' ? '🌸' : b.type === 'clinic' ? '🩺' : '🏋️'} {b.type}
+                      {getBusinessEmoji(b.type)} {b.type}
                     </p>
                   </div>
                   {b.id === activeBusinessId && (

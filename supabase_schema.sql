@@ -7,7 +7,7 @@
 CREATE TABLE IF NOT EXISTS public.businesses (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
-    type TEXT NOT NULL CHECK (type IN ('salon', 'spa', 'clinic', 'gym')),
+    type TEXT NOT NULL,
     owner_name TEXT NOT NULL,
     phone TEXT NOT NULL,
     upi_id TEXT,
@@ -104,9 +104,12 @@ CREATE TABLE IF NOT EXISTS public.services (
 
 -- ====================================================================
 -- MIGRATION HELPERS FOR EXISTING TABLES
--- This ensures existing setups get the user_id column automatically
+-- This ensures existing setups accept any custom input for business sector
+-- and get the user_id column automatically
 -- ====================================================================
 ALTER TABLE public.businesses ADD COLUMN IF NOT EXISTS user_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE public.businesses DROP CONSTRAINT IF EXISTS businesses_type_check;
+ALTER TABLE public.businesses ALTER COLUMN type TYPE TEXT;
 ALTER TABLE public.staff ADD COLUMN IF NOT EXISTS user_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE public.clients ADD COLUMN IF NOT EXISTS user_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE public.packages ADD COLUMN IF NOT EXISTS user_id TEXT NOT NULL DEFAULT '';

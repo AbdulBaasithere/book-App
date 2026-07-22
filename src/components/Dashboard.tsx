@@ -1,4 +1,5 @@
 import React from 'react';
+import { motion } from 'motion/react';
 import { Booking, Payment, Package, Staff, Client, Business } from '../types';
 import { 
   TrendingUp, 
@@ -13,7 +14,10 @@ import {
   Plus,
   MessageSquare,
   QrCode,
-  Cake
+  Cake,
+  Sparkles,
+  RefreshCw,
+  Quote
 } from 'lucide-react';
 
 interface DashboardProps {
@@ -170,31 +174,113 @@ export default function Dashboard({
     }
   };
 
+  const [aiQuote, setAiQuote] = React.useState<{ quote: string; author: string; generatedBy?: string }>({
+    quote: "Focus on delivering excellence today, and today's revenue will naturally flow.",
+    author: "Daily Wealth AI",
+    generatedBy: "Gemini AI"
+  });
+  const [isLoadingQuote, setIsLoadingQuote] = React.useState(false);
+
+  const fetchAiQuote = React.useCallback(async () => {
+    setIsLoadingQuote(true);
+    try {
+      const sector = business?.type || 'business';
+      const res = await fetch(`/api/ai/quote?sector=${encodeURIComponent(sector)}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success && data.quote) {
+          setAiQuote({
+            quote: data.quote,
+            author: data.author || "Daily Wealth AI",
+            generatedBy: data.generatedBy || "AI Engine"
+          });
+        }
+      }
+    } catch (e) {
+      console.error("Failed to fetch AI quote:", e);
+    } finally {
+      setIsLoadingQuote(false);
+    }
+  }, [business?.type]);
+
+  React.useEffect(() => {
+    fetchAiQuote();
+  }, [fetchAiQuote]);
+
+  const kpiContainerVariants = {
+    hidden: { opacity: 0 },
+    show: {
+      opacity: 1,
+      transition: {
+        staggerChildren: 0.08,
+        delayChildren: 0.05,
+      },
+    },
+  };
+
+  const kpiCardVariants = {
+    hidden: { opacity: 0, y: 16, scale: 0.97 },
+    show: {
+      opacity: 1,
+      y: 0,
+      scale: 1,
+      transition: {
+        duration: 0.4,
+        ease: [0.22, 1, 0.36, 1],
+      },
+    },
+  };
+
   return (
     <div className="space-y-6 pb-20" id="owner-dashboard-root">
       
       {/* Top Welcome / Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-slate-900">Namaste! 👋</h1>
-          <p className="text-sm text-slate-500">Here is your business summary for today.</p>
+          <div className="mt-2 flex items-center gap-2 flex-wrap text-sm text-slate-700 bg-gradient-to-r from-amber-50/90 via-emerald-50/60 to-amber-50/90 border border-amber-200/80 rounded-xl px-3.5 py-2 max-w-2xl shadow-xs">
+            <Sparkles className="h-4 w-4 text-amber-600 shrink-0" />
+            <p className="text-xs sm:text-sm font-medium text-amber-950 italic flex-1">
+              "{aiQuote.quote}"
+            </p>
+            <span className="text-[11px] text-amber-800/90 font-bold whitespace-nowrap">
+              — {aiQuote.author}
+            </span>
+            <button
+              onClick={fetchAiQuote}
+              disabled={isLoadingQuote}
+              title="Generate fresh AI daily earning quote"
+              className="inline-flex items-center gap-1 text-[11px] text-amber-800 hover:text-amber-950 font-semibold px-2 py-1 bg-amber-100/90 hover:bg-amber-200 rounded-lg transition-colors disabled:opacity-50 cursor-pointer shadow-2xs shrink-0"
+            >
+              <RefreshCw className={`h-3 w-3 ${isLoadingQuote ? 'animate-spin text-amber-600' : ''}`} />
+              <span>Generate Quote</span>
+            </button>
+          </div>
         </div>
         <button
           id="btn-quick-booking"
           onClick={onAddBookingClick}
-          className="inline-flex items-center gap-2 bg-indigo-600 text-white px-4 py-2.5 rounded-xl text-sm font-medium shadow-sm hover:bg-indigo-700 transition-colors cursor-pointer"
+          className="inline-flex items-center gap-2 bg-indigo-600 text-white px-4 py-2.5 rounded-xl text-sm font-medium shadow-sm hover:bg-indigo-700 transition-colors cursor-pointer self-start md:self-auto shrink-0"
         >
           <Plus className="h-4 w-4" />
           <span>New Booking</span>
         </button>
       </div>
 
-      {/* Primary KPI Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      {/* Primary KPI Cards with Staggered Fade-In */}
+      <motion.div 
+        className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-4"
+        variants={kpiContainerVariants}
+        initial="hidden"
+        animate="show"
+      >
         
-        {/* Collection card */}
-        <div 
+        {/* Collection / Revenue card */}
+        <motion.div 
           id="kpi-monthly-collection"
+          variants={kpiCardVariants}
+          whileHover={{ y: -3 }}
+          transition={{ duration: 0.2 }}
           className="premium-card p-5 flex flex-col justify-between"
         >
           <div className="flex items-center justify-between mb-3">
@@ -210,13 +296,16 @@ export default function Dashboard({
               ₹{weeklyRevenue.toLocaleString('en-IN')} this week
             </p>
           </div>
-        </div>
+        </motion.div>
 
         {/* Today's Bookings card */}
-        <div 
+        <motion.div 
           id="kpi-today-bookings"
+          variants={kpiCardVariants}
+          whileHover={{ y: -3 }}
+          transition={{ duration: 0.2 }}
           onClick={() => onNavigateToTab('calendar')}
-          className="premium-card p-5 flex flex-col justify-between cursor-pointer hover:border-indigo-300"
+          className="premium-card p-5 flex flex-col justify-between cursor-pointer hover:border-indigo-300 transition-colors"
         >
           <div className="flex items-center justify-between mb-3">
             <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Bookings Today</span>
@@ -231,13 +320,40 @@ export default function Dashboard({
               {completedToday} done • {pendingToday} left
             </p>
           </div>
-        </div>
+        </motion.div>
+
+        {/* Total Clients card */}
+        <motion.div 
+          id="kpi-total-clients"
+          variants={kpiCardVariants}
+          whileHover={{ y: -3 }}
+          transition={{ duration: 0.2 }}
+          onClick={() => onNavigateToTab('clients')}
+          className="premium-card p-5 flex flex-col justify-between cursor-pointer hover:border-purple-300 transition-colors"
+        >
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Total Clients</span>
+            <div className="p-2 bg-purple-50 text-purple-600 rounded-xl">
+              <Users className="h-4.5 w-4.5" />
+            </div>
+          </div>
+          <div>
+            <h3 className="text-xl md:text-2xl font-extrabold text-slate-900 tracking-tight font-display">{clients.length} Clients</h3>
+            <p className="text-[10px] font-bold text-slate-400 mt-1 flex items-center gap-1">
+              <span className="inline-block w-1 h-1 rounded-full bg-purple-400"></span>
+              {clients.length > 0 ? `${clients.length} registered customer${clients.length > 1 ? 's' : ''}` : 'No registered clients'}
+            </p>
+          </div>
+        </motion.div>
 
         {/* Outstanding Dues card */}
-        <div 
+        <motion.div 
           id="kpi-total-dues"
+          variants={kpiCardVariants}
+          whileHover={{ y: -3 }}
+          transition={{ duration: 0.2 }}
           onClick={() => onNavigateToTab('payments')}
-          className="premium-card p-5 flex flex-col justify-between cursor-pointer hover:border-rose-300"
+          className="premium-card p-5 flex flex-col justify-between cursor-pointer hover:border-rose-300 transition-colors"
         >
           <div className="flex items-center justify-between mb-3">
             <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Total Dues</span>
@@ -252,13 +368,16 @@ export default function Dashboard({
               Pending payments
             </p>
           </div>
-        </div>
+        </motion.div>
 
         {/* Expiring packages card */}
-        <div 
+        <motion.div 
           id="kpi-expiring-packages"
+          variants={kpiCardVariants}
+          whileHover={{ y: -3 }}
+          transition={{ duration: 0.2 }}
           onClick={() => onNavigateToTab('packages')}
-          className={`premium-card p-5 flex flex-col justify-between cursor-pointer ${
+          className={`premium-card p-5 flex flex-col justify-between cursor-pointer transition-colors ${
             expiringSoonPackages.length > 0 
               ? 'bg-amber-50/40 border-amber-200/60 hover:border-amber-300' 
               : 'hover:border-slate-300'
@@ -277,9 +396,9 @@ export default function Dashboard({
               Nearly empty or expired
             </p>
           </div>
-        </div>
+        </motion.div>
 
-      </div>
+      </motion.div>
 
       {/* Package & Payment Quick Stats */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">

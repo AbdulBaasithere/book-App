@@ -26,6 +26,10 @@ export async function fetchSupabaseConfig(): Promise<SupabaseConfig> {
   // Fallback to server env config
   try {
     const res = await fetch('/api/supabase/config');
+    const contentType = res.headers.get('content-type') || '';
+    if (!res.ok || !contentType.includes('application/json')) {
+      return { configured: false, url: null, key: null, source: null };
+    }
     const data = await res.json();
     if (data.configured) {
       return {

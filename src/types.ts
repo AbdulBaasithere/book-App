@@ -1,5 +1,25 @@
 export type BusinessType = string;
 
+export function getBusinessEmoji(type: string): string {
+  const t = (type || '').toLowerCase();
+  if (t.includes('salon') || t.includes('hair') || t.includes('barber') || t.includes('stylist')) return '💇';
+  if (t.includes('spa') || t.includes('beauty') || t.includes('wellness') || t.includes('skin')) return '🌸';
+  if (t.includes('clinic') || t.includes('doctor') || t.includes('medical') || t.includes('dental') || t.includes('dentist') || t.includes('physio')) return '🩺';
+  if (t.includes('gym') || t.includes('fitness') || t.includes('workout') || t.includes('train') || t.includes('yoga') || t.includes('dance')) return '🏋️';
+  if (t.includes('massage') || t.includes('therapy')) return '💆';
+  if (t.includes('nail')) return '💅';
+  if (t.includes('groom')) return '🧔';
+  if (t.includes('tattoo')) return '✒️';
+  if (t.includes('pet') || t.includes('dog') || t.includes('cat') || t.includes('vet')) return '🐾';
+  if (t.includes('consult') || t.includes('law') || t.includes('coach') || t.includes('office')) return '💼';
+  if (t.includes('edu') || t.includes('tutor') || t.includes('class') || t.includes('school') || t.includes('teach')) return '🎓';
+  if (t.includes('photo') || t.includes('shoot') || t.includes('video') || t.includes('film')) return '📷';
+  if (t.includes('car') || t.includes('wash') || t.includes('auto') || t.includes('repair')) return '🚗';
+  if (t.includes('clean') || t.includes('maid') || t.includes('house')) return '🧹';
+  if (t.includes('food') || t.includes('cafe') || t.includes('restaurant') || t.includes('bakery')) return '🍔';
+  return '📦'; // Default/General fallback
+}
+
 export interface Business {
   id: string;
   name: string;
