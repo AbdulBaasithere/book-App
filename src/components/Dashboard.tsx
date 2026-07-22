@@ -237,7 +237,7 @@ export default function Dashboard({
       {/* Top Welcome / Header */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-slate-900">Namaste! 👋</h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-slate-900">Hello! 👋</h1>
           <div className="mt-2 flex items-center gap-2 flex-wrap text-sm text-slate-700 bg-gradient-to-r from-amber-50/90 via-emerald-50/60 to-amber-50/90 border border-amber-200/80 rounded-xl px-3.5 py-2 max-w-2xl shadow-xs">
             <Sparkles className="h-4 w-4 text-amber-600 shrink-0" />
             <p className="text-xs sm:text-sm font-medium text-amber-950 italic flex-1">
